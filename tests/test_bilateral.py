@@ -186,6 +186,54 @@ class TestREGVMEngine:
         assert call[0, 0] == pytest.approx(0.0)   # 3 < MTA=5
         assert call[0, 2] == pytest.approx(10.0)   # 10 > MTA=5
 
+    def test_path_csb_zero_mta_equals_stationary(self):
+        """When MTA=0 path_csb should equal the stationary target at every step."""
+        csa = CSATerms.regvm_standard("CP", mta=0.0)
+        vm = REGVMEngine(csa)
+        grid = np.linspace(0, 1, self.mtm.shape[1])  # match mtm column count
+        path = vm.path_csb(self.mtm, grid)
+        target = vm.credit_support_balance(self.mtm)
+        assert np.allclose(path, target)
+
+    def test_path_csb_mta_causes_stickiness(self):
+        """With large MTA, CSB should be sticky and not track every MTM move."""
+        mtm = np.array([
+            [0.0, 1.0, 2.0, 3.0, 4.0],  # slowly increasing → first call only when gap >= MTA
+        ], dtype=float)
+        grid = np.linspace(0, 1, 5)
+        # MTA=2.5: transfer fires when gap >= 2.5
+        csa = CSATerms(mta_party=2.5, mta_counterparty=2.5,
+                       threshold_party=0.0, threshold_counterparty=0.0,
+                       margin_call_frequency=0.25)  # call every 0.25 years
+        vm = REGVMEngine(csa)
+        csb = vm.path_csb(mtm, grid)
+
+        # At t=0: CSB = target = 0
+        assert csb[0, 0] == pytest.approx(0.0)
+        # At t=1 (mtm=1): excess=1 < MTA=2.5 → sticky, CSB stays 0
+        assert csb[0, 1] == pytest.approx(0.0)
+        # At t=2 (mtm=2): excess=2 < MTA=2.5 → sticky
+        assert csb[0, 2] == pytest.approx(0.0)
+        # At t=3 (mtm=3): excess=3 >= MTA=2.5 → transfer, CSB=3
+        assert csb[0, 3] == pytest.approx(3.0)
+        # At t=4 (mtm=4): excess=4-3=1 < MTA → sticky
+        assert csb[0, 4] == pytest.approx(3.0)
+
+    def test_path_csb_return_fires_on_mtm_drop(self):
+        """MTA-gated return: CSB falls when MTM drops enough below current balance."""
+        mtm = np.array([[0.0, 10.0, 10.0, 1.0]], dtype=float)
+        grid = np.linspace(0, 1, 4)
+        csa = CSATerms(mta_party=2.0, mta_counterparty=2.0,
+                       threshold_party=0.0, threshold_counterparty=0.0,
+                       margin_call_frequency=1 / 3)
+        vm = REGVMEngine(csa)
+        csb = vm.path_csb(mtm, grid)
+
+        # t=0: CSB=0; t=1: gap=10 >= 2 → CSB=10; t=2: gap=0, sticky; t=3: gap=1-10=-9 <= -2 → CSB=1
+        assert csb[0, 1] == pytest.approx(10.0)
+        assert csb[0, 2] == pytest.approx(10.0)
+        assert csb[0, 3] == pytest.approx(1.0)
+
     def test_collateralised_exposure_less_than_uncoll(self):
         results, grid = rates_setup()
         ns = NettingSet("test")

@@ -390,8 +390,8 @@ class ISDAExposureCalculator:
         # 1. Net MTM
         net_mtm = self.netting_set.net_mtm(simulation_results)  # (n_paths, T)
 
-        # 2. VM: Credit Support Balance (stationary approximation)
-        csb = self.vm_engine.credit_support_balance(net_mtm)  # (n_paths, T)
+        # 2. VM: path-dependent CSB (MTA-gated) and MPOR-lagged version for exposure
+        csb = self.vm_engine.path_csb(net_mtm, time_grid)          # (n_paths, T)
         lagged_csb = self.vm_engine.lagged_csb(net_mtm, time_grid)  # (n_paths, T)
 
         # 3. IM

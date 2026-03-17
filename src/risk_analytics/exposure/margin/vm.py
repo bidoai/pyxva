@@ -15,16 +15,17 @@ from risk_analytics.exposure.csa import CSATerms, MarginRegime
 class REGVMEngine:
     """Computes Variation Margin calls and Credit Support Balance on simulation paths.
 
-    Under a bilateral CSA, at each time step:
-    - If net MtM V(t) > threshold_counterparty: we call VM from the counterparty.
-    - If net MtM V(t) < -threshold_party: the counterparty calls VM from us.
-    - Transfers only occur if the change exceeds the MTA.
+    Under a bilateral CSA, at each margin call date:
+    - Compute the target CSB from current MTM, thresholds and IAs.
+    - A transfer occurs only if the gap to the previous balance exceeds the MTA.
+    - If the gap exceeds MTA: balance jumps to the target (ISDA delivery/return).
+    - If the gap is within MTA: balance is sticky (no transfer this period).
 
-    For Monte Carlo path-wise computation we use the **stationary approximation**:
-    the Credit Support Balance (CSB) is set to its stationary target value at each
-    time step, rather than tracking the rolling balance. This is standard practice
-    in XVA/PFE engines where the simulation is not path-recurrent. The MPOR
-    adjustments in ``BilateralExposureCalculator`` then add the gap-risk effect.
+    ``credit_support_balance`` returns the *stationary* target at each step
+    (useful for threshold/IA analytics and zero-MTA cases).
+    ``path_csb`` returns the *path-dependent* balance that properly accounts
+    for MTA gating and margin call frequency. Use ``path_csb`` (via ``lagged_csb``)
+    for exposure calculations.
 
     Parameters
     ----------
@@ -36,19 +37,19 @@ class REGVMEngine:
         self.csa = csa
 
     def credit_support_balance(self, net_mtm: np.ndarray) -> np.ndarray:
-        """Net collateral balance held by us (Credit Support Balance).
+        """Stationary target CSB at each time step (no MTA gating).
 
         CSB(t) = max(V(t) - TH_c, 0)        [VM received from cp]
                - max(-V(t) - TH_p, 0)       [VM posted by us]
                + IA_counterparty - IA_party  [Independent Amounts]
 
-        Positive CSB means we hold net collateral (reduces our EE).
-        Negative CSB means we posted net collateral (increases our EE).
+        This is the *unconstrained* target — useful for threshold/IA analytics
+        and as a benchmark. When MTA = 0 this equals ``path_csb``. Use
+        ``path_csb`` for exposure calculations when MTA > 0.
 
         Parameters
         ----------
         net_mtm : np.ndarray, shape (n_paths, T)
-            Net MtM of the netting set.
 
         Returns
         -------
@@ -58,22 +59,88 @@ class REGVMEngine:
         th_p = self.csa.threshold_party
         ia_net = self.csa.ia_counterparty - self.csa.ia_party
 
-        vm_received = np.maximum(net_mtm - th_c, 0.0)   # cp posts to us
-        vm_posted = np.maximum(-net_mtm - th_p, 0.0)    # we post to cp
-
+        vm_received = np.maximum(net_mtm - th_c, 0.0)
+        vm_posted = np.maximum(-net_mtm - th_p, 0.0)
         csb = vm_received - vm_posted + ia_net
 
         if self.csa.rounding_nearest > 0:
             csb = self._round_conservative(csb, net_mtm)
+        return csb
+
+    def path_csb(self, net_mtm: np.ndarray, time_grid: np.ndarray) -> np.ndarray:
+        """Path-dependent Credit Support Balance with MTA gating.
+
+        At each margin call date the ISDA CSA rule is:
+        - Delivery Amount (we receive): if target - CSB_prev >= MTA_party,
+          transfer target - CSB_prev and set CSB = target.
+        - Return Amount (we post back): if CSB_prev - target >= MTA_counterparty,
+          transfer CSB_prev - target and set CSB = target.
+        - Otherwise: no transfer, CSB stays at CSB_prev.
+
+        Steps that fall between margin call dates (determined by
+        ``csa.margin_call_frequency``) carry the previous balance forward.
+
+        Parameters
+        ----------
+        net_mtm : np.ndarray, shape (n_paths, T)
+        time_grid : np.ndarray, shape (T,)
+
+        Returns
+        -------
+        np.ndarray, shape (n_paths, T)
+            Path-dependent CSB on every simulation path at every time step.
+        """
+        n_paths, T = net_mtm.shape
+        mta_p = self.csa.mta_party
+        mta_c = self.csa.mta_counterparty
+        mcf = self.csa.margin_call_frequency
+
+        # Stationary target at every step (n_paths, T)
+        target = self.credit_support_balance(net_mtm)
+
+        # Determine which time steps trigger a margin call.
+        # A call fires at time t if at least mcf years have elapsed since
+        # the previous call, so on a fine grid every step qualifies when mcf <= dt.
+        call_mask = np.zeros(T, dtype=bool)
+        last_call_t = -np.inf
+        for i, t in enumerate(time_grid):
+            if t - last_call_t >= mcf - 1e-10:
+                call_mask[i] = True
+                last_call_t = t
+
+        csb = np.empty((n_paths, T))
+        # At inception the balance is at the day-0 target (equilibrium start).
+        csb[:, 0] = target[:, 0]
+
+        for i in range(1, T):
+            if not call_mask[i]:
+                # No margin call this period: balance is unchanged.
+                csb[:, i] = csb[:, i - 1]
+                continue
+
+            excess = target[:, i] - csb[:, i - 1]
+
+            # Transfer fires when gap exceeds the applicable MTA.
+            transfer = (excess >= mta_p) | (excess <= -mta_c)
+            new_csb = np.where(transfer, target[:, i], csb[:, i - 1])
+
+            if self.csa.rounding_nearest > 0:
+                unit = self.csa.rounding_nearest
+                new_csb = np.where(
+                    new_csb >= 0,
+                    np.floor(new_csb / unit) * unit,
+                    np.ceil(new_csb / unit) * unit,
+                )
+
+            csb[:, i] = new_csb
 
         return csb
 
     def vm_call(self, net_mtm: np.ndarray) -> np.ndarray:
-        """VM call amount from our perspective (positive = we call from cp).
+        """Marginal VM call from our perspective (positive = we call from cp).
 
-        This is the gross delivery/return amount before MTA filtering.
-        For path simulation, this equals ``credit_support_balance`` minus
-        any IA offset, representing the pure VM component.
+        Returns the gross delivery/return amount at each step before MTA
+        filtering, based on the stationary target. Useful for marginal analytics.
 
         Parameters
         ----------
@@ -99,17 +166,15 @@ class REGVMEngine:
         time_grid: np.ndarray,
         lag: float | None = None,
     ) -> np.ndarray:
-        """CSB lagged by MPOR to simulate the last-good-margin state.
+        """Path-dependent CSB lagged by MPOR to reflect the last-good-margin state.
 
-        Under a default scenario, the last posted collateral was set at
-        ``t - MPOR``. Exposure at time ``t`` is thus:
-            E(t) = max(V(t) - CSB(t - MPOR), 0)
+        Under a default scenario, the last successful margin call was at t - MPOR.
+        Exposure at time t is therefore:
 
-        This method computes ``CSB(t - MPOR)`` by:
-        1. Computing the full CSB(t) on each path.
-        2. Interpolating back by ``mpor`` on the time axis.
+            E(t) = max(V(t) - CSB_path(t - MPOR), 0)
 
-        For ``t < MPOR``, we clamp to t=0 (only IA, no VM yet).
+        Computes the path-dependent ``path_csb`` and interpolates it backward
+        by ``mpor`` on the time axis. For t < MPOR, clamped to t = 0.
 
         Parameters
         ----------
@@ -123,14 +188,12 @@ class REGVMEngine:
         np.ndarray, shape (n_paths, T)
         """
         lag = lag if lag is not None else self.csa.mpor
-        csb_full = self.credit_support_balance(net_mtm)  # (n_paths, T)
+        csb_full = self.path_csb(net_mtm, time_grid)           # path-dependent (n_paths, T)
         lagged_times = np.clip(time_grid - lag, time_grid[0], time_grid[-1])
 
-        # Vectorised interpolation across all paths
         lagged = np.empty_like(csb_full)
         for p in range(csb_full.shape[0]):
             lagged[p] = np.interp(lagged_times, time_grid, csb_full[p])
-
         return lagged
 
     def uncollateralised_exposure(self, net_mtm: np.ndarray) -> np.ndarray:
