@@ -10,6 +10,9 @@ dependencies = [
     "scipy>=1.17.1",
 ]
 
+[project.scripts]
+risk-analytics-demo = "risk_analytics.demo:main"
+
 [build-system]
 requires = ["uv_build>=0.10.11,<0.11.0"]
 build-backend = "uv_build"
