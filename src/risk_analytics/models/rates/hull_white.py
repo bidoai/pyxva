@@ -55,7 +55,15 @@ class HullWhite1F(StochasticModel):
         n_paths: int,
         random_draws: np.ndarray,
     ) -> SimulationResult:
-        """Euler-Maruyama discretisation of the Hull-White SDE.
+        """Exact Gaussian transition for the Hull-White SDE.
+
+        Given r(t) and θ(t) constant over [t, t+dt], the exact solution is:
+
+            r(t+dt) = r(t)·e^{-a·dt}
+                      + (θ(t)/a)·(1 - e^{-a·dt})
+                      + σ·√((1 - e^{-2a·dt}) / (2a)) · Z
+
+        where Z ~ N(0,1). This is bias-free regardless of step size.
 
         Parameters
         ----------
@@ -68,22 +76,38 @@ class HullWhite1F(StochasticModel):
         SimulationResult with factor 'r', shape (n_paths, T, 1)
         """
         T = len(time_grid)
-        dt = np.diff(time_grid)
+        dt = np.diff(time_grid)  # (T-1,)
 
         theta = self.theta if self.theta is not None else np.zeros(T - 1)
         if len(theta) != T - 1:
             raise ValueError(f"theta must have length {T - 1}, got {len(theta)}")
 
+        a, sigma = self.a, self.sigma
         paths = np.empty((n_paths, T))
         paths[:, 0] = self.r0
 
-        dW = random_draws[:, :, 0]  # (n_paths, T-1)
+        Z = random_draws[:, :, 0]  # (n_paths, T-1)
+
+        # Precompute per-step scalar coefficients (T-1 values, not n_paths×T ops)
+        if a != 0.0:
+            e_adt = np.exp(-a * dt)                            # (T-1,)
+            # Use expm1 for numerical stability when a*dt is small:
+            # 1 - e^{-2a·dt} = -expm1(-2a·dt)
+            var_step = sigma**2 * (-np.expm1(-2.0 * a * dt)) / (2.0 * a)  # (T-1,)
+            std_step = np.sqrt(var_step)                        # (T-1,)
+            theta_contrib = (theta / a) * (1.0 - e_adt)        # (T-1,)
+        else:
+            # a → 0 limit: Vasicek degenerates to arithmetic BM with drift
+            e_adt = np.ones(T - 1)
+            std_step = sigma * np.sqrt(dt)
+            theta_contrib = theta * dt
 
         for i in range(T - 1):
-            r = paths[:, i]
-            drift = (theta[i] - self.a * r) * dt[i]
-            diffusion = self.sigma * np.sqrt(dt[i]) * dW[:, i]
-            paths[:, i + 1] = r + drift + diffusion
+            paths[:, i + 1] = (
+                paths[:, i] * e_adt[i]
+                + theta_contrib[i]
+                + std_step[i] * Z[:, i]
+            )
 
         return SimulationResult(
             time_grid=time_grid,
