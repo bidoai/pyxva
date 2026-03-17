@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import numpy as np
 
 from risk_analytics.core.base import Pricer
 from risk_analytics.core.paths import SimulationResult
+
+if TYPE_CHECKING:
+    from risk_analytics.core.schedule import Schedule
 
 
 class ZeroCouponBond(Pricer):
@@ -86,31 +91,45 @@ class FixedRateBond(Pricer):
     ----------
     coupon_rate : float
         Annual coupon rate.
-    maturity : float
-        Bond maturity in years.
+    maturity : float | None
+        Bond maturity in years. Required when ``schedule`` is None.
     coupon_freq : int
-        Coupons per year (e.g. 2 = semi-annual).
+        Coupons per year (e.g. 2 = semi-annual). Used only when
+        ``schedule`` is None.
     face_value : float
         Notional.
+    schedule : Schedule | None
+        Pre-built payment schedule. When provided, coupon amounts are
+        ``face_value * coupon_rate * δᵢ`` per period using the schedule's
+        actual day-count fractions rather than the uniform ``1/coupon_freq``.
     """
 
     def __init__(
         self,
         coupon_rate: float,
-        maturity: float,
+        maturity: float | None = None,
         coupon_freq: int = 2,
         face_value: float = 1000.0,
+        schedule: "Schedule | None" = None,
     ) -> None:
         self.coupon_rate = coupon_rate
-        self.maturity = maturity
-        self.coupon_freq = coupon_freq
         self.face_value = face_value
+        self.schedule = schedule
 
-        # Build coupon schedule
-        dt = 1.0 / coupon_freq
-        n_coupons = int(round(maturity * coupon_freq))
-        self.coupon_times = np.array([dt * (i + 1) for i in range(n_coupons)])
-        self.coupon_amount = face_value * coupon_rate / coupon_freq
+        if schedule is not None:
+            self.coupon_times = schedule.payment_times
+            # Coupon amount per period uses actual day-count fraction
+            self.coupon_amounts = face_value * coupon_rate * schedule.day_count_fractions
+            self.maturity = float(schedule.payment_times[-1])
+        else:
+            if maturity is None:
+                raise ValueError("Either maturity or schedule must be provided.")
+            self.maturity = maturity
+            self.coupon_freq = coupon_freq
+            dt = 1.0 / coupon_freq
+            n_coupons = int(round(maturity * coupon_freq))
+            self.coupon_times = np.array([dt * (i + 1) for i in range(n_coupons)])
+            self.coupon_amounts = np.full(n_coupons, face_value * coupon_rate * dt)
 
     def price(self, result: SimulationResult) -> np.ndarray:
         """Sum of discounted cash flows using Vasicek-style discount factors.
@@ -129,21 +148,22 @@ class FixedRateBond(Pricer):
         prices = np.zeros((n_paths, n_steps))
 
         for i, t in enumerate(time_grid):
-            # Sum discounted coupons and face value from t onward
-            future_coupons = self.coupon_times[self.coupon_times > t]
-            if len(future_coupons) == 0:
+            future_mask = self.coupon_times > t
+            if not future_mask.any():
                 continue
 
-            pv = np.zeros(n_paths)
-            for T_c in future_coupons:
-                tau = T_c - t
-                df = np.exp(-r[:, i] * tau)
-                pv += self.coupon_amount * df
+            future_T = self.coupon_times[future_mask]        # (k,)
+            future_C = self.coupon_amounts[future_mask]      # (k,)
+
+            # Discounted coupons — vectorised over payments
+            tau = future_T - t                               # (k,)
+            df = np.exp(-r[:, i, None] * tau[None, :])      # (n_paths, k)
+            pv = (future_C[None, :] * df).sum(axis=1)       # (n_paths,)
 
             # Face value repayment
             tau_mat = self.maturity - t
             if tau_mat > 0:
-                pv += self.face_value * np.exp(-r[:, i] * tau_mat)
+                pv = pv + self.face_value * np.exp(-r[:, i] * tau_mat)
 
             prices[:, i] = pv
 
