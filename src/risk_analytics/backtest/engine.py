@@ -27,7 +27,10 @@ import logging
 
 import numpy as np
 
-from .metrics import ee_accuracy, ee_profile, exceedance_series, pfe_profile, basel_zone
+from .metrics import (
+    basel_zone, bias_ttest, ee_accuracy, ee_profile,
+    exceedance_series, kupiec_pof, pfe_profile,
+)
 from .result import BacktestResult
 
 logger = logging.getLogger(__name__)
@@ -110,14 +113,16 @@ class BacktestEngine:
         exc_rate = n_exc / T
         expected_rate = 1.0 - self.confidence
         zone = basel_zone(n_exc, T)
+        kpof = kupiec_pof(n_exc, T, self.confidence)
         acc = ee_accuracy(ee, realized)
+        btt = bias_ttest(ee, realized)
 
         logger.info(
             "Backtest complete: exceptions=%d/%d (%.1f%% vs %.1f%% expected)  "
-            "zone=%s  EE_RMSE=%.4g  EE_bias=%.4g",
+            "zone=%s  kupiec_p=%.3f  EE_RMSE=%.4g  EE_bias=%.4g  bias_p=%.3f",
             n_exc, T,
             exc_rate * 100, expected_rate * 100,
-            zone, acc["rmse"], acc["bias"],
+            zone, kpof["p_value"], acc["rmse"], acc["bias"], btt["p_value"],
         )
 
         return BacktestResult(
@@ -131,7 +136,11 @@ class BacktestEngine:
             exception_rate=exc_rate,
             expected_exception_rate=expected_rate,
             basel_zone=zone,
+            kupiec_lr=kpof["lr_stat"],
+            kupiec_pvalue=kpof["p_value"],
             ee_rmse=acc["rmse"],
             ee_bias=acc["bias"],
             ee_mae=acc["mae"],
+            bias_tstat=btt["t_stat"],
+            bias_pvalue=btt["p_value"],
         )

@@ -32,12 +32,24 @@ class BacktestResult:
         Theoretical exception rate under a correct model (1 - confidence).
     basel_zone : str
         "Green", "Amber", or "Red" — Basel traffic-light classification.
+    kupiec_lr : float
+        Kupiec POF likelihood ratio test statistic (χ²(1) asymptotically).
+    kupiec_pvalue : float
+        Right-tail p-value of the Kupiec test. Low values (< 0.05) indicate
+        the exception frequency is inconsistent with the model's confidence
+        level. See caveat on serial correlation in :func:`~metrics.kupiec_pof`.
     ee_rmse : float
         RMSE of EE forecast vs realised MTM.
     ee_bias : float
         Mean signed error of EE forecast (positive = over-prediction).
     ee_mae : float
         Mean absolute error of EE forecast.
+    bias_tstat : float
+        t-statistic for H₀: mean(EE − realized) = 0.
+    bias_pvalue : float
+        Two-sided p-value for the bias t-test. Low values indicate
+        statistically significant systematic over- or under-prediction.
+        See caveat on serial correlation in :func:`~metrics.bias_ttest`.
     """
 
     time_grid: np.ndarray
@@ -50,9 +62,13 @@ class BacktestResult:
     exception_rate: float
     expected_exception_rate: float
     basel_zone: str
+    kupiec_lr: float
+    kupiec_pvalue: float
     ee_rmse: float
     ee_bias: float
     ee_mae: float
+    bias_tstat: float
+    bias_pvalue: float
 
     def summary(self) -> dict:
         """Return a flat dict of scalar summary statistics.
@@ -65,7 +81,8 @@ class BacktestResult:
         dict with keys:
             n_observations, n_exceptions, exception_rate,
             expected_exception_rate, excess_exception_rate,
-            basel_zone, ee_rmse, ee_bias, ee_mae
+            basel_zone, kupiec_lr, kupiec_pvalue,
+            ee_rmse, ee_bias, ee_mae, bias_tstat, bias_pvalue
         """
         return {
             "n_observations": int(len(self.time_grid)),
@@ -74,7 +91,11 @@ class BacktestResult:
             "expected_exception_rate": self.expected_exception_rate,
             "excess_exception_rate": self.exception_rate - self.expected_exception_rate,
             "basel_zone": self.basel_zone,
+            "kupiec_lr": self.kupiec_lr,
+            "kupiec_pvalue": self.kupiec_pvalue,
             "ee_rmse": self.ee_rmse,
             "ee_bias": self.ee_bias,
             "ee_mae": self.ee_mae,
+            "bias_tstat": self.bias_tstat,
+            "bias_pvalue": self.bias_pvalue,
         }

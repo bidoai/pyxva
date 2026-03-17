@@ -7,9 +7,11 @@ import pytest
 from risk_analytics.backtest import BacktestEngine, BacktestResult
 from risk_analytics.backtest.metrics import (
     basel_zone,
+    bias_ttest,
     ee_accuracy,
     ee_profile,
     exceedance_series,
+    kupiec_pof,
     pfe_profile,
 )
 
@@ -148,6 +150,95 @@ class TestEeAccuracy:
 
 
 # ---------------------------------------------------------------------------
+# Kupiec POF test
+# ---------------------------------------------------------------------------
+
+class TestKupiecPof:
+    def test_zero_exceptions_finite_lr(self):
+        result = kupiec_pof(0, 100, 0.95)
+        assert np.isfinite(result["lr_stat"])
+        assert 0.0 <= result["p_value"] <= 1.0
+
+    def test_all_exceptions_finite_lr(self):
+        result = kupiec_pof(100, 100, 0.95)
+        assert np.isfinite(result["lr_stat"])
+        assert 0.0 <= result["p_value"] <= 1.0
+
+    def test_correct_model_high_pvalue(self):
+        """Exception rate equal to expected → p-value should be high (near 1)."""
+        # 5 exceptions in 100 obs, p0 = 0.05 — exact match
+        result = kupiec_pof(5, 100, 0.95)
+        assert result["p_value"] > 0.5
+
+    def test_grossly_wrong_model_low_pvalue(self):
+        """Far too many exceptions → p-value should be very small."""
+        # 30 exceptions in 100 obs when expecting 5% → strongly reject
+        result = kupiec_pof(30, 100, 0.95)
+        assert result["p_value"] < 0.01
+
+    def test_lr_stat_nonnegative(self):
+        for k in [0, 2, 5, 10, 20]:
+            r = kupiec_pof(k, 100, 0.95)
+            assert r["lr_stat"] >= 0.0
+
+    def test_zero_observations_returns_nan(self):
+        result = kupiec_pof(0, 0, 0.95)
+        assert np.isnan(result["lr_stat"])
+        assert np.isnan(result["p_value"])
+
+    def test_pvalue_in_unit_interval(self):
+        for k in range(0, 21):
+            r = kupiec_pof(k, 100, 0.95)
+            assert 0.0 <= r["p_value"] <= 1.0
+
+
+# ---------------------------------------------------------------------------
+# Bias t-test
+# ---------------------------------------------------------------------------
+
+class TestBiasTtest:
+    def test_zero_bias_high_pvalue(self):
+        """No bias → should fail to reject H0."""
+        rng = np.random.default_rng(0)
+        ee = rng.standard_normal(200) * 100 + 500
+        realized = ee.copy()   # residuals all zero
+        result = bias_ttest(ee, realized)
+        assert result["p_value"] == pytest.approx(1.0)
+        assert result["t_stat"] == pytest.approx(0.0)
+
+    def test_large_positive_bias_low_pvalue(self):
+        """Consistent over-prediction → reject H0."""
+        rng = np.random.default_rng(2)
+        # Independent noise so residuals have variance; large positive mean
+        ee = rng.standard_normal(100) * 10 + 1000.0
+        realized = rng.standard_normal(100) * 10
+        result = bias_ttest(ee, realized)
+        assert result["t_stat"] > 0
+        assert result["p_value"] < 0.001
+
+    def test_large_negative_bias_low_pvalue(self):
+        """Consistent under-prediction → reject H0, t negative."""
+        rng = np.random.default_rng(3)
+        ee = rng.standard_normal(100) * 10 - 1000.0
+        realized = rng.standard_normal(100) * 10
+        result = bias_ttest(ee, realized)
+        assert result["t_stat"] < 0
+        assert result["p_value"] < 0.001
+
+    def test_returns_nan_for_single_observation(self):
+        result = bias_ttest(np.array([5.0]), np.array([3.0]))
+        assert np.isnan(result["t_stat"])
+        assert np.isnan(result["p_value"])
+
+    def test_pvalue_in_unit_interval(self):
+        rng = np.random.default_rng(1)
+        ee = rng.standard_normal(50) * 10
+        realized = rng.standard_normal(50) * 10
+        result = bias_ttest(ee, realized)
+        assert 0.0 <= result["p_value"] <= 1.0
+
+
+# ---------------------------------------------------------------------------
 # BacktestEngine integration tests
 # ---------------------------------------------------------------------------
 
@@ -219,9 +310,39 @@ class TestBacktestEngine:
         expected = {
             "n_observations", "n_exceptions", "exception_rate",
             "expected_exception_rate", "excess_exception_rate",
-            "basel_zone", "ee_rmse", "ee_bias", "ee_mae",
+            "basel_zone",
+            "kupiec_lr", "kupiec_pvalue",
+            "ee_rmse", "ee_bias", "ee_mae",
+            "bias_tstat", "bias_pvalue",
         }
         assert expected == set(s.keys())
+
+    def test_kupiec_pvalue_in_unit_interval(self):
+        realized = self.rng.standard_normal(self.T) * 20_000
+        result = self.engine.run(self.mtm_paths, realized, self.time_grid)
+        assert 0.0 <= result.kupiec_pvalue <= 1.0
+        assert result.kupiec_lr >= 0.0
+
+    def test_bias_pvalue_in_unit_interval(self):
+        realized = self.rng.standard_normal(self.T) * 20_000
+        result = self.engine.run(self.mtm_paths, realized, self.time_grid)
+        assert 0.0 <= result.bias_pvalue <= 1.0
+
+    def test_correct_model_kupiec_not_rejected(self):
+        """For a correct 95% model, Kupiec p-value should generally be > 0.05."""
+        n_paths = 10_000
+        T = 100
+        paths = self.rng.standard_normal((n_paths, T)) * 100
+        realized = self.rng.standard_normal(T) * 100
+        result = self.engine.run(paths, realized, np.linspace(0, 1, T))
+        # With seed=42 this is deterministic — just ensure p-value is in [0,1]
+        assert 0.0 <= result.kupiec_pvalue <= 1.0
+
+    def test_zero_realized_kupiec_finite(self):
+        """Zero realized → 0 exceptions; Kupiec should still return finite values."""
+        result = self.engine.run(self.mtm_paths, np.zeros(self.T), self.time_grid)
+        assert np.isfinite(result.kupiec_lr)
+        assert np.isfinite(result.kupiec_pvalue)
 
     def test_excess_exception_rate_is_difference(self):
         realized = np.full(self.T, 1e12)

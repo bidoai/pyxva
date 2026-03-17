@@ -216,6 +216,62 @@ simm_im = SimmCalculator().total_im(sens)
 
 ---
 
+## Backtesting
+
+`BacktestEngine` is model-agnostic: it accepts any MTM forecast distribution and a
+realised MTM series, then computes PFE exceedances, statistical tests, and EE accuracy.
+
+```python
+from risk_analytics import BacktestEngine, MonteCarloEngine, GeometricBrownianMotion, TimeGrid
+
+time_grid = TimeGrid.uniform(1.0, 50)
+gbm = GeometricBrownianMotion(S0=100.0, mu=0.05, sigma=0.20)
+
+# Simulate — peel off one path as "realised", backtest on the rest
+engine   = MonteCarloEngine(n_paths=2001, seed=0)
+all_paths = engine.run([gbm], time_grid)["GBM"].factor("S")
+
+realized_mtm = all_paths[0] - 100.0        # treat path 0 as ground truth
+forecast_mtm = all_paths[1:] - 100.0       # remaining paths as forecast distribution
+
+bt     = BacktestEngine(confidence=0.95)
+result = bt.run(forecast_mtm, realized_mtm, time_grid)
+
+s = result.summary()
+print(f"Exceptions:      {s['n_exceptions']}/{s['n_observations']} "
+      f"({s['exception_rate']:.1%} vs {s['expected_exception_rate']:.1%} expected)")
+print(f"Basel zone:      {s['basel_zone']}")
+print(f"Kupiec p-value:  {s['kupiec_pvalue']:.3f}")   # < 0.05 → reject correct model
+print(f"EE bias:         {s['ee_bias']:,.0f}")
+print(f"Bias p-value:    {s['bias_pvalue']:.3f}")     # < 0.05 → systematic over/under-prediction
+print(f"EE RMSE:         {s['ee_rmse']:,.0f}")
+```
+
+**Outputs in `BacktestResult.summary()`:**
+
+| Key | Description |
+|---|---|
+| `n_exceptions` / `exception_rate` | PFE exceedance count and rate |
+| `expected_exception_rate` | Theoretical rate = 1 − confidence |
+| `basel_zone` | "Green" / "Amber" / "Red" (scaled to 250-obs equivalent) |
+| `kupiec_lr` / `kupiec_pvalue` | Kupiec POF likelihood ratio test — tests whether exception frequency is statistically consistent with the model's confidence level |
+| `ee_rmse` / `ee_bias` / `ee_mae` | EE forecast accuracy vs realised MTM |
+| `bias_tstat` / `bias_pvalue` | t-test for H₀: mean(EE − realized) = 0 — detects systematic over/under-prediction |
+
+> **Note on p-values:** both tests assume i.i.d. residuals. MTM paths are serially
+> correlated, so effective sample size is lower than `T` and p-values will be
+> anti-conservative. Treat as directional signals rather than strict hypothesis tests.
+
+**Walk-forward pattern** — call `run()` once per window and collect results:
+
+```python
+bt_results = []
+for paths_window, realized_window, grid_window in walk_forward_windows:
+    bt_results.append(bt.run(paths_window, realized_window, grid_window))
+```
+
+---
+
 ## Logging
 
 The library uses Python's standard `logging` module throughout. To see INFO-level
@@ -299,5 +355,7 @@ print(f"BCVA:           {out['bcva']:>12,.0f}")
 Run the full demo (with summary tables and legacy CSA / IM comparisons):
 
 ```bash
-uv run python demo.py
+uv run risk-analytics-demo
+# or: uv run python -m risk_analytics.demo
+# or: uv run python demo.py
 ```

@@ -8,6 +8,7 @@ Demonstrates the complete pipeline:
   4.  Basic exposure metrics (PSE / EPE / PFE)
   5.  ISDA bilateral exposure with CSA, VM, IM, collateral
   6.  CVA / DVA / BCVA
+  7.  Backtesting (PFE exceedance, Kupiec test, EE bias t-test)
 
 Run with:  uv run risk-analytics-demo
        or: uv run python -m risk_analytics.demo
@@ -16,6 +17,8 @@ Run with:  uv run risk-analytics-demo
 import numpy as np
 
 from risk_analytics import (
+    # Backtest
+    BacktestEngine,
     # Core
     MonteCarloEngine,
     TimeGrid,
@@ -285,6 +288,51 @@ def main() -> None:
         pfe  = out_regvm["pfe"][i]
         print(f"  {t:>6.1f}  {ee_u:>12,.0f}  {ee_c:>13,.0f}  "
               f"{ene:>10,.0f}  {pfe:>10,.0f}")
+
+    # ===========================================================================
+    # 9. BACKTESTING — PFE EXCEEDANCE AND EE ACCURACY
+    # ===========================================================================
+    section("9. Backtesting (Synthetic Realised Path)")
+
+    # Simulate a fresh batch with one extra path; peel off path 0 as "realised".
+    bt_engine = MonteCarloEngine(n_paths=2001, seed=99)
+    bt_results = bt_engine.run([hw], time_grid=grid)
+    all_rate_paths = bt_results["HullWhite1F"].factor("r")   # (2001, T)
+
+    # Convert short rates to approximate IRS MTM using existing pricer
+    # (price all paths then split into realised vs forecast)
+    from risk_analytics import InterestRateSwap as IRS
+    bt_payer = IRS(fixed_rate=0.045, maturity=5.0, notional=1_000_000, payer=True)
+    from risk_analytics.core.paths import SimulationResult
+    all_mtm = bt_payer.price(
+        SimulationResult(
+            time_grid=grid,
+            paths=all_rate_paths[:, :, np.newaxis],
+            model_name="HullWhite1F",
+            factor_names=["r"],
+        )
+    )   # (2001, T)
+
+    realized_mtm = all_mtm[0]        # one path as synthetic ground truth
+    forecast_mtm = all_mtm[1:]       # remaining 2000 paths as forecast distribution
+
+    bt = BacktestEngine(confidence=0.95)
+    bt_result = bt.run(forecast_mtm, realized_mtm, grid)
+    s = bt_result.summary()
+
+    print(f"  Exceptions:     {s['n_exceptions']}/{s['n_observations']} "
+          f"({s['exception_rate']:.1%} vs {s['expected_exception_rate']:.1%} expected)")
+    print(f"  Basel zone:     {s['basel_zone']}")
+    print(f"  Kupiec LR stat: {s['kupiec_lr']:.4f}")
+    print(f"  Kupiec p-value: {s['kupiec_pvalue']:.3f}   "
+          f"({'fail to reject' if s['kupiec_pvalue'] > 0.05 else 'REJECT'} H₀ at 5%)")
+    print(f"  EE bias:        {s['ee_bias']:>12,.0f}   "
+          f"({'over-predicts' if s['ee_bias'] > 0 else 'under-predicts'})")
+    print(f"  Bias t-stat:    {s['bias_tstat']:.4f}")
+    print(f"  Bias p-value:   {s['bias_pvalue']:.3f}   "
+          f"({'fail to reject' if s['bias_pvalue'] > 0.05 else 'REJECT'} H₀ at 5%)")
+    print(f"  EE RMSE:        {s['ee_rmse']:>12,.0f}")
+    print(f"  EE MAE:         {s['ee_mae']:>12,.0f}")
 
     print(f"\n{SEP}")
     print("  Demo complete.")
