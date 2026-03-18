@@ -4,8 +4,8 @@ from __future__ import annotations
 import pytest
 import numpy as np
 
-from risk_analytics.core.market_data import MarketData, BumpType, ScenarioBump
-from risk_analytics.core.yield_curve import YieldCurve, Interpolation
+from pyxva.core.market_data import MarketData, BumpType, ScenarioBump
+from pyxva.core.yield_curve import YieldCurve, Interpolation
 
 
 # ---------------------------------------------------------------------------

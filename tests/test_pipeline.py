@@ -4,10 +4,10 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from risk_analytics.core.market_data import MarketData, ScenarioBump
-from risk_analytics.pipeline.config import EngineConfig, TradeFactory
-from risk_analytics.pipeline.engine import RiskEngine
-from risk_analytics.pipeline.result import AgreementResult, RunResult
+from pyxva.core.market_data import MarketData, ScenarioBump
+from pyxva.pipeline.config import EngineConfig, TradeFactory
+from pyxva.pipeline.engine import RiskEngine
+from pyxva.pipeline.result import AgreementResult, RunResult
 
 
 # ---------------------------------------------------------------------------
@@ -248,7 +248,7 @@ def test_total_cva_aggregation(run_result):
 # ---------------------------------------------------------------------------
 
 def test_trade_factory_unknown_type():
-    from risk_analytics.pipeline.config import TradeFactory, TradeConfig
+    from pyxva.pipeline.config import TradeFactory, TradeConfig
     with pytest.raises(ValueError, match="Unknown trade type"):
         TradeFactory.build(
             TradeConfig(id="x", type="UnknownInstrument", model="m", params={})

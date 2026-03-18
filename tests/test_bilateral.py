@@ -2,10 +2,10 @@
 import numpy as np
 import pytest
 
-from risk_analytics.core import MonteCarloEngine, TimeGrid
-from risk_analytics.models import HullWhite1F, GeometricBrownianMotion
-from risk_analytics.pricing import InterestRateSwap, EuropeanOption
-from risk_analytics.exposure import (
+from pyxva.core import MonteCarloEngine, TimeGrid
+from pyxva.models import HullWhite1F, GeometricBrownianMotion
+from pyxva.pricing import InterestRateSwap, EuropeanOption
+from pyxva.exposure import (
     CSATerms,
     MarginRegime,
     IMModel,
@@ -19,7 +19,7 @@ from risk_analytics.exposure import (
     ISDAExposureCalculator,
     NettingSet,
 )
-from risk_analytics.portfolio.trade import Trade
+from pyxva.portfolio.trade import Trade
 
 N_PATHS = 2000
 SEED = 42
@@ -476,7 +476,7 @@ class TestISDAExposureCalculator:
         payer_mtm = InterestRateSwap(0.05, 5.0, 1e6, payer=True).price(r)
         recv_mtm = InterestRateSwap(0.03, 5.0, 5e5, payer=False).price(r)
 
-        from risk_analytics.exposure import ExposureCalculator
+        from pyxva.exposure import ExposureCalculator
         ec = ExposureCalculator()
         ee_gross = ec.expected_exposure(payer_mtm) + ec.expected_exposure(recv_mtm)
         ee_net = out["ee"]

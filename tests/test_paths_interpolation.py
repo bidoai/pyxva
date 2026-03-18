@@ -4,7 +4,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from risk_analytics.core.paths import SimulationResult
+from pyxva.core.paths import SimulationResult
 
 
 def make_linear_result() -> SimulationResult:

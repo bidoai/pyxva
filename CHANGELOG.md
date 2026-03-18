@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to `risk-analytics` are documented here.
+All notable changes to `pyxva` are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
@@ -10,15 +10,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Added
 
 - **HullWhite2F** two-factor Hull-White (G2++) short rate model
-  (`src/risk_analytics/models/rates/hull_white2f.py`). Compatible with
+  (`src/pyxva/models/rates/hull_white2f.py`). Compatible with
   existing rate pricers via the combined short-rate factor "r" = r(t)+u(t).
 
 - **AsianOption** arithmetic average `StatefulPricer`
-  (`src/risk_analytics/pricing/exotic/asian_option.py`). Payoff at expiry:
+  (`src/pyxva/pricing/exotic/asian_option.py`). Payoff at expiry:
   `max(avg(S) - K, 0)` where avg is the arithmetic mean over all simulation
   steps up to expiry.
 
-- **SA-CCR calculator** (`src/risk_analytics/exposure/saccr.py`). Formula-
+- **SA-CCR calculator** (`src/pyxva/exposure/saccr.py`). Formula-
   based Basel III Standardised Approach for measuring counterparty credit risk
   EAD. Supports IR, equity, and FX asset classes.
 
@@ -52,9 +52,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Exports
 
-- `HullWhite2F` added to `risk_analytics.models`.
-- `AsianOption` added to `risk_analytics.pricing`.
-- `SACCRCalculator` added to `risk_analytics.exposure`.
+- `HullWhite2F` added to `pyxva.models`.
+- `AsianOption` added to `pyxva.pricing`.
+- `SACCRCalculator` added to `pyxva.exposure`.
 
 ---
 

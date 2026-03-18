@@ -4,9 +4,9 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from risk_analytics.core.paths import SimulationResult
-from risk_analytics.pricing.rates.swap import InterestRateSwap
-from risk_analytics.pricing.rates.bond import ZeroCouponBond, FixedRateBond
+from pyxva.core.paths import SimulationResult
+from pyxva.pricing.rates.swap import InterestRateSwap
+from pyxva.pricing.rates.bond import ZeroCouponBond, FixedRateBond
 
 
 def _hw_result(n_paths: int = 50, n_steps: int = 21, r0: float = 0.04) -> SimulationResult:

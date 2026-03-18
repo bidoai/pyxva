@@ -4,8 +4,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from risk_analytics.core.paths import SimulationResult
-from risk_analytics.pipeline.shared_memory import SimulationSharedMemory
+from pyxva.core.paths import SimulationResult
+from pyxva.pipeline.shared_memory import SimulationSharedMemory
 
 
 def _make_results() -> dict:

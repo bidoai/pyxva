@@ -1,4 +1,4 @@
-# risk_analytics
+# pyxva
 
 A Python library for Monte Carlo counterparty credit risk (CCR) and XVA analytics.
 Designed to demonstrate production-quality architecture for simulation, pricing, margining,
@@ -21,7 +21,7 @@ trade ingestion, governance controls, audit logging, and monitoring.
 ## Quick Start
 
 ```python
-from risk_analytics import RiskEngine
+from pyxva import RiskEngine
 
 result = RiskEngine.from_yaml("examples/single_swap.yaml").run()
 
@@ -32,7 +32,7 @@ print(result.summary_df())
 Or from a dict config:
 
 ```python
-from risk_analytics import RiskEngine
+from pyxva import RiskEngine
 
 result = RiskEngine({
     "simulation": {"n_paths": 10000, "seed": 42, "time_grid": {"type": "standard"}},
@@ -90,7 +90,7 @@ It is designed to demonstrate correct modelling, clean architecture, and extensi
 ## Architecture
 
 ```
-risk_analytics/
+pyxva/
 ├── core/
 │   ├── base.py          # StochasticModel + Pricer ABCs
 │   │                    #   interpolation_space — sparse path interpolation space per factor
@@ -156,7 +156,7 @@ models and the discount/forward provider during pricing. It never mutates — `b
 `scenario()` always return a new copy.
 
 ```python
-from risk_analytics import MarketData, BumpType, ScenarioBump
+from pyxva import MarketData, BumpType, ScenarioBump
 
 md = MarketData.from_dict({
     "curves": {
@@ -207,7 +207,7 @@ All known cashflow dates are merged as hard nodes, so interpolation never crosse
 discontinuity in instrument MTM.
 
 ```python
-from risk_analytics import SparseTimeGrid
+from pyxva import SparseTimeGrid
 
 # Standard grid: daily 2w → weekly 52w → monthly to maturity
 grid = SparseTimeGrid.standard(30.0)    # 30-year deal: ~170 nodes
@@ -270,7 +270,7 @@ hw2 = HullWhite1F().load("hw.json")
 
 ## Two-Engine Architecture
 
-`risk_analytics` has two distinct engine layers that work in sequence:
+`pyxva` has two distinct engine layers that work in sequence:
 
 ```
 MonteCarloEngine          →   SimulationResult (paths)
@@ -294,7 +294,7 @@ the other.
 ### MonteCarloEngine (path generation)
 
 ```python
-from risk_analytics import MonteCarloEngine, SparseTimeGrid
+from pyxva import MonteCarloEngine, SparseTimeGrid
 
 grid   = SparseTimeGrid.standard(5.0)
 engine = MonteCarloEngine(n_paths=10_000, seed=42, antithetic=False, quasi_random=False)
@@ -327,7 +327,7 @@ per-netting-set floor), because a single CSA governs the combined margin obligat
 CVA/DVA are computed at agreement level on the aggregated expected exposure.
 
 ```python
-from risk_analytics import Trade, Agreement, NettingSet, CSATerms
+from pyxva import Trade, Agreement, NettingSet, CSATerms
 
 # Build trades
 swap = InterestRateSwap(fixed_rate=0.045, maturity=5.0, notional=1_000_000, payer=True)
@@ -437,7 +437,7 @@ outputs:
 ### Programmatic usage
 
 ```python
-from risk_analytics import RiskEngine, MarketData, ScenarioBump, BumpType
+from pyxva import RiskEngine, MarketData, ScenarioBump, BumpType
 
 # From YAML file
 engine = RiskEngine.from_yaml("config.yaml")
@@ -486,7 +486,7 @@ features, etc.
 ```python
 from dataclasses import dataclass
 import numpy as np
-from risk_analytics.core.stateful import PathState, StatefulPricer
+from pyxva.core.stateful import PathState, StatefulPricer
 
 @dataclass
 class MyState(PathState):
@@ -519,7 +519,7 @@ giving smooth EE/PFE profiles. At expiry, it returns the payoff if
 the barrier was never breached, otherwise zero.
 
 ```python
-from risk_analytics.pricing.exotic import BarrierOption
+from pyxva.pricing.exotic import BarrierOption
 
 opt = BarrierOption(
     strike=105.0,
@@ -541,7 +541,7 @@ the running sum and count of spot observations; payoff at expiry is
 `max(avg(S) − K, 0)`.
 
 ```python
-from risk_analytics.pricing.exotic import AsianOption
+from pyxva.pricing.exotic import AsianOption
 
 opt = AsianOption(
     strike=100.0,
@@ -571,8 +571,8 @@ MTM matrix. For large simulations (e.g. 100k+ paths), this can reduce memory usa
 several GB compared to the batch approach.
 
 ```python
-from risk_analytics.exposure.streaming import StreamingExposureEngine
-from risk_analytics.exposure.csa import CSATerms
+from pyxva.exposure.streaming import StreamingExposureEngine
+from pyxva.exposure.csa import CSATerms
 
 trades = [("payer_5y", swap), ("barrier_call", barrier_opt)]
 csa    = CSATerms.regvm_standard("CP_A", mta=10_000)
@@ -591,7 +591,7 @@ out.peak_pfe          # scalar
 `REGVMStepper` can also be used stand-alone to test margining logic:
 
 ```python
-from risk_analytics.exposure.streaming import REGVMStepper
+from pyxva.exposure.streaming import REGVMStepper
 
 stepper = REGVMStepper(csa, n_paths=1000)
 for t_idx, net_mtm_t in enumerate(net_mtm_steps):   # (n_paths,) slices
@@ -620,7 +620,7 @@ required. Use them directly in YAML configs:
 Register additional trade types with the `@TradeFactory.register` decorator:
 
 ```python
-from risk_analytics.pipeline.config import TradeFactory
+from pyxva.pipeline.config import TradeFactory
 
 @TradeFactory.register("LookbackCall")
 def _build_lookback(params):
@@ -638,7 +638,7 @@ exposes lightweight descriptors that worker processes can use to attach numpy vi
 copying data:
 
 ```python
-from risk_analytics.pipeline.shared_memory import SimulationSharedMemory
+from pyxva.pipeline.shared_memory import SimulationSharedMemory
 
 with SimulationSharedMemory(simulation_results) as shm:
     desc = shm.descriptors   # picklable — safe to send to ProcessPoolExecutor
@@ -665,7 +665,7 @@ All blocks are unlinked automatically on `__exit__`.
 re-simulation. This is cheap enough for interactive sensitivity analysis.
 
 ```python
-from risk_analytics import ScenarioBump, BumpType
+from pyxva import ScenarioBump, BumpType
 
 # +25bps parallel shift on USD rates
 stressed = result.stress_test(
@@ -694,7 +694,7 @@ stressed = result.stress_test(
 Risk EAD formula: **EAD = 1.4 × (RC + PFE add-on)**.
 
 ```python
-from risk_analytics.exposure.saccr import SACCRCalculator, SACCRTrade
+from pyxva.exposure.saccr import SACCRCalculator, SACCRTrade
 
 calc = SACCRCalculator()
 calc.add_trade(SACCRTrade(
@@ -730,7 +730,7 @@ Ready-to-run YAML configs live in `examples/`. Run with:
 
 ```bash
 uv run python -c "
-from risk_analytics import RiskEngine
+from pyxva import RiskEngine
 result = RiskEngine.from_yaml('examples/single_swap.yaml').run()
 print(result.summary_df())
 "
@@ -749,7 +749,7 @@ print(result.summary_df())
 ### Basic (uncollateralised)
 
 ```python
-from risk_analytics import ExposureCalculator, NettingSet
+from pyxva import ExposureCalculator, NettingSet
 
 calc = ExposureCalculator()
 summary = calc.exposure_summary(mtm, time_grid, confidence=0.95)
@@ -763,7 +763,7 @@ net_mtm = ns.net_mtm(results)
 ### Bilateral (ISDA/regulatory)
 
 ```python
-from risk_analytics import CSATerms, ISDAExposureCalculator
+from pyxva import CSATerms, ISDAExposureCalculator
 
 csa  = CSATerms.regvm_standard("Counterparty_A", mta=10_000)
 isda = ISDAExposureCalculator(ns, csa)
@@ -778,8 +778,8 @@ out  = isda.run(results, time_grid, confidence=0.95,
 ## Regulatory Initial Margin
 
 ```python
-from risk_analytics import REGIMEngine, CSATerms, IMModel, SimmSensitivities
-from risk_analytics.exposure import SimmCalculator
+from pyxva import REGIMEngine, CSATerms, IMModel, SimmSensitivities
+from pyxva.exposure import SimmCalculator
 
 # Schedule IM
 im_engine = REGIMEngine(CSATerms(im_model=IMModel.SCHEDULE))
@@ -798,7 +798,7 @@ simm_im = SimmCalculator().total_im(sens)
 ## Day-Count Conventions and Schedules
 
 ```python
-from risk_analytics.core import (
+from pyxva.core import (
     DayCountConvention, BusinessDayConvention,
     NullCalendar, TARGET, USCalendar,
     Frequency, Schedule,
@@ -827,7 +827,7 @@ Calendars: `NullCalendar` (weekends only), `TARGET` (ECB), `USCalendar` (Federal
 realised MTM series.
 
 ```python
-from risk_analytics import BacktestEngine
+from pyxva import BacktestEngine
 
 bt     = BacktestEngine(confidence=0.95)
 result = bt.run(forecast_mtm, realized_mtm, time_grid)
@@ -863,8 +863,8 @@ Use `level=logging.DEBUG` for per-step internals. No output by default (library-
 ## Run the demo
 
 ```bash
-uv run risk-analytics-demo
-# or: uv run python -m risk_analytics.demo
+uv run pyxva-demo
+# or: uv run python -m pyxva.demo
 # or: uv run python demo.py
 ```
 

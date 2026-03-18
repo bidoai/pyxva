@@ -7,7 +7,7 @@ from datetime import date
 import numpy as np
 import pytest
 
-from risk_analytics.core import (
+from pyxva.core import (
     BusinessDayConvention,
     DayCountConvention,
     Frequency,
@@ -16,7 +16,7 @@ from risk_analytics.core import (
     TARGET,
     USCalendar,
 )
-from risk_analytics.core.conventions import _easter
+from pyxva.core.conventions import _easter
 
 
 # ---------------------------------------------------------------------------
@@ -276,7 +276,7 @@ class TestSchedule:
 
 class TestScheduleDrivenPricers:
     def test_swap_with_schedule_has_nonuniform_deltas(self):
-        from risk_analytics.pricing import InterestRateSwap
+        from pyxva.pricing import InterestRateSwap
 
         sched = Schedule.from_dates(
             date(2024, 1, 1), date(2026, 1, 1),
@@ -289,7 +289,7 @@ class TestScheduleDrivenPricers:
         assert not np.allclose(swap.deltas, swap.deltas[0])
 
     def test_swap_maturity_from_schedule(self):
-        from risk_analytics.pricing import InterestRateSwap
+        from pyxva.pricing import InterestRateSwap
 
         sched = Schedule.from_dates(
             date(2024, 1, 1), date(2029, 1, 1),
@@ -299,7 +299,7 @@ class TestScheduleDrivenPricers:
         assert abs(swap.maturity - 5.0) < 0.01
 
     def test_bond_coupon_amounts_from_schedule(self):
-        from risk_analytics.pricing import FixedRateBond
+        from pyxva.pricing import FixedRateBond
 
         sched = Schedule.from_dates(
             date(2024, 1, 1), date(2026, 1, 1),

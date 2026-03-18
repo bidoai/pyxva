@@ -2,8 +2,8 @@
 import numpy as np
 import pytest
 
-from risk_analytics.core import MonteCarloEngine, TimeGrid
-from risk_analytics.models import (
+from pyxva.core import MonteCarloEngine, TimeGrid
+from pyxva.models import (
     GeometricBrownianMotion,
     GarmanKohlhagen,
     HestonModel,
@@ -55,7 +55,7 @@ class TestHullWhite1F:
 
     def test_discount_factor_flat_curve_at_t0(self):
         """At t=0 on a flat 5% curve, P(0,T) from affine formula must equal exp(-0.05*T)."""
-        from risk_analytics.core.yield_curve import YieldCurve
+        from pyxva.core.yield_curve import YieldCurve
         r0 = 0.05
         tenors = [0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 30.0]
         rates = [r0] * len(tenors)
@@ -81,7 +81,7 @@ class TestHullWhite1F:
         This is a hard mathematical fact: the value of a ZCB at its own
         maturity is 1 regardless of the prevailing rate.
         """
-        from risk_analytics.core.yield_curve import YieldCurve
+        from pyxva.core.yield_curve import YieldCurve
         tenors = [0.5, 1.0, 2.0, 5.0, 10.0]
         rates = [0.030, 0.035, 0.040, 0.045, 0.048]
         curve = YieldCurve(tenors, rates)
@@ -98,7 +98,7 @@ class TestHullWhite1F:
 
     def test_discount_factor_decreasing_in_maturity(self):
         """For fixed t and r(t), P(t, T) must decrease as T increases (positive rates)."""
-        from risk_analytics.core.yield_curve import YieldCurve
+        from pyxva.core.yield_curve import YieldCurve
         tenors = [0.5, 1.0, 2.0, 5.0, 10.0]
         rates = [0.030, 0.035, 0.040, 0.045, 0.048]
         curve = YieldCurve(tenors, rates)

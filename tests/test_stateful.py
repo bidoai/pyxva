@@ -6,9 +6,9 @@ from dataclasses import dataclass
 import numpy as np
 import pytest
 
-from risk_analytics.core.paths import SimulationResult
-from risk_analytics.core.stateful import PathState, StatefulPricer
-from risk_analytics.pricing.exotic.barrier_option import BarrierOption
+from pyxva.core.paths import SimulationResult
+from pyxva.core.stateful import PathState, StatefulPricer
+from pyxva.pricing.exotic.barrier_option import BarrierOption
 
 
 # ---------------------------------------------------------------------------

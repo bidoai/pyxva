@@ -3,9 +3,9 @@ from __future__ import annotations
 
 import pytest
 
-from risk_analytics.pipeline.config import TradeConfig, TradeFactory
-from risk_analytics.core.base import Pricer
-from risk_analytics.core.paths import SimulationResult
+from pyxva.pipeline.config import TradeConfig, TradeFactory
+from pyxva.core.base import Pricer
+from pyxva.core.paths import SimulationResult
 import numpy as np
 
 
@@ -57,7 +57,7 @@ class TestTradeFactoryRegister:
             params={"fixed_rate": 0.04, "maturity": 5.0},
         )
         trade = TradeFactory.build(cfg)
-        from risk_analytics.pricing.rates.swap import InterestRateSwap
+        from pyxva.pricing.rates.swap import InterestRateSwap
         assert isinstance(trade.pricer, InterestRateSwap)
 
     def test_register_returns_original_fn(self):

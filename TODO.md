@@ -1,6 +1,6 @@
 # TODO / Improvements
 
-Tracked improvements and known gaps in the `risk_analytics` library.
+Tracked improvements and known gaps in the `pyxva` library.
 Items are grouped by area; priority labels: `[P1]` urgent / `[P2]` important / `[P3]` nice-to-have.
 
 ---
@@ -138,7 +138,7 @@ Items are grouped by area; priority labels: `[P1]` urgent / `[P2]` important / `
 
 - [x] **[P3] Example YAML configs in `examples/`.**
   Ship a `single_swap.yaml`, `multi_asset.yaml`, and `stress_test.yaml` that users can
-  run immediately with `uv run risk-analytics-demo`.
+  run immediately with `uv run pyxva-demo`.
 
 - [x] **[P3] Changelog (`CHANGELOG.md`).**
   Track breaking changes and notable additions per version so library consumers know

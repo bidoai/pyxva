@@ -2,11 +2,11 @@
 import numpy as np
 import pytest
 
-from risk_analytics.core import MonteCarloEngine, TimeGrid
-from risk_analytics.models import GeometricBrownianMotion, HullWhite1F
-from risk_analytics.pricing import EuropeanOption, InterestRateSwap
-from risk_analytics.exposure import ExposureCalculator, NettingSet
-from risk_analytics.portfolio.trade import Trade
+from pyxva.core import MonteCarloEngine, TimeGrid
+from pyxva.models import GeometricBrownianMotion, HullWhite1F
+from pyxva.pricing import EuropeanOption, InterestRateSwap
+from pyxva.exposure import ExposureCalculator, NettingSet
+from pyxva.portfolio.trade import Trade
 
 N_PATHS = 2000
 SEED = 42
@@ -158,7 +158,7 @@ class TestNettingSet:
         # Both keyed by their model names: 'GBM' — but run() uses model.name as key,
         # which for both is 'GBM'. We rename one via a wrapper to give distinct keys.
         # Use the pipeline's _ModelWrapper pattern directly.
-        from risk_analytics.pipeline.engine import _ModelWrapper
+        from pyxva.pipeline.engine import _ModelWrapper
         model_lo_w = _ModelWrapper(model_lo, "eq_lo")
         model_hi_w = _ModelWrapper(model_hi, "eq_hi")
         results = engine.run([model_lo_w, model_hi_w], grid)

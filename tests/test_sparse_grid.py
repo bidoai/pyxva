@@ -4,7 +4,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from risk_analytics.core.grid import SparseTimeGrid
+from pyxva.core.grid import SparseTimeGrid
 
 
 class TestStandard:

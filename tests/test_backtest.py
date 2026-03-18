@@ -4,8 +4,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from risk_analytics.backtest import BacktestEngine, BacktestResult
-from risk_analytics.backtest.metrics import (
+from pyxva.backtest import BacktestEngine, BacktestResult
+from pyxva.backtest.metrics import (
     basel_zone,
     bias_ttest,
     ee_accuracy,
@@ -375,7 +375,7 @@ class TestSyntheticEndToEnd:
     """Simulate GBM, use path-0 as realised, backtest the rest."""
 
     def test_gbm_backtest_green_zone(self):
-        from risk_analytics import MonteCarloEngine, GeometricBrownianMotion, TimeGrid
+        from pyxva import MonteCarloEngine, GeometricBrownianMotion, TimeGrid
 
         time_grid = TimeGrid.uniform(1.0, 50)
         n_paths = 2000

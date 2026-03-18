@@ -4,11 +4,11 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from risk_analytics.core.paths import SimulationResult
-from risk_analytics.exposure.csa import CSATerms, MarginRegime, IMModel
-from risk_analytics.exposure.streaming.vm_stepper import REGVMStepper
-from risk_analytics.exposure.streaming.engine import StreamingExposureEngine
-from risk_analytics.pricing.rates.swap import InterestRateSwap
+from pyxva.core.paths import SimulationResult
+from pyxva.exposure.csa import CSATerms, MarginRegime, IMModel
+from pyxva.exposure.streaming.vm_stepper import REGVMStepper
+from pyxva.exposure.streaming.engine import StreamingExposureEngine
+from pyxva.pricing.rates.swap import InterestRateSwap
 
 
 # ---------------------------------------------------------------------------
@@ -220,14 +220,14 @@ def test_streaming_batch_ee_parity():
 
     Tolerance: 1bp (0.0001) on a unit-notional basis.
     """
-    from risk_analytics.core.engine import MonteCarloEngine
-    from risk_analytics.core.grid import TimeGrid
-    from risk_analytics.models.rates.hull_white import HullWhite1F
-    from risk_analytics.pricing.rates.swap import InterestRateSwap
-    from risk_analytics.exposure.netting import NettingSet
-    from risk_analytics.exposure.bilateral import ISDAExposureCalculator
-    from risk_analytics.exposure.csa import CSATerms, MarginRegime, IMModel
-    from risk_analytics.portfolio.trade import Trade
+    from pyxva.core.engine import MonteCarloEngine
+    from pyxva.core.grid import TimeGrid
+    from pyxva.models.rates.hull_white import HullWhite1F
+    from pyxva.pricing.rates.swap import InterestRateSwap
+    from pyxva.exposure.netting import NettingSet
+    from pyxva.exposure.bilateral import ISDAExposureCalculator
+    from pyxva.exposure.csa import CSATerms, MarginRegime, IMModel
+    from pyxva.portfolio.trade import Trade
 
     N_PATHS = 3000
     SEED = 42

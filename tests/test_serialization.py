@@ -7,7 +7,7 @@ import math
 import numpy as np
 import pytest
 
-from risk_analytics.models import (
+from pyxva.models import (
     GarmanKohlhagen,
     GeometricBrownianMotion,
     HestonModel,

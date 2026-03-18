@@ -2,9 +2,9 @@
 import numpy as np
 import pytest
 
-from risk_analytics.core import MonteCarloEngine, TimeGrid
-from risk_analytics.models import GeometricBrownianMotion, HullWhite1F
-from risk_analytics.pricing import (
+from pyxva.core import MonteCarloEngine, TimeGrid
+from pyxva.models import GeometricBrownianMotion, HullWhite1F
+from pyxva.pricing import (
     EuropeanOption,
     FixedRateBond,
     InterestRateSwap,

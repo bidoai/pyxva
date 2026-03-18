@@ -4,9 +4,9 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from risk_analytics.core import YieldCurve, Interpolation
-from risk_analytics.models import HullWhite1F
-from risk_analytics.core.grid import TimeGrid
+from pyxva.core import YieldCurve, Interpolation
+from pyxva.models import HullWhite1F
+from pyxva.core.grid import TimeGrid
 
 
 # ---------------------------------------------------------------------------
@@ -265,7 +265,7 @@ class TestHullWhiteIntegration:
         assert self.hw.theta is not None
 
     def test_simulation_runs_after_calibration(self):
-        from risk_analytics import MonteCarloEngine
+        from pyxva import MonteCarloEngine
         self.hw.calibrate({"yield_curve": self.curve, "time_grid": self.grid})
         engine = MonteCarloEngine(n_paths=100, seed=0)
         results = engine.run([self.hw], self.grid)

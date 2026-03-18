@@ -1,6 +1,6 @@
 # Design Notes
 
-Key architectural decisions behind `risk_analytics` — the *why* behind the choices,
+Key architectural decisions behind `pyxva` — the *why* behind the choices,
 not just the *what*.
 
 ---
