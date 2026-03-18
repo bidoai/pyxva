@@ -15,10 +15,9 @@ Items are grouped by area; priority labels: `[P1]` urgent / `[P2]` important / `
 - [x] **[P1] Remove dead code: `_make_aggregate_ns()` in `pipeline/engine.py`.**
   The function raises `NotImplementedError` and is no longer referenced.
 
-- [ ] **[P2] `pipeline/persistence.py` — lazy RunResult loading.**
-  `RunResult.to_parquet()` exists but there is no `RunResult.from_parquet()`.  A lazy
-  implementation should memory-map per-agreement profile arrays and load scalars eagerly.
-  DuckDB can be used for querying across runs.
+- [x] **[P2] `pipeline/persistence.py` — lazy RunResult loading.**
+  Implemented in v1.1. `RunResult.from_parquet(path, use_duckdb=False)` loads scalars
+  eagerly and profile arrays via pandas/DuckDB. Optional DuckDB dependency for queries.
 
 - [x] **[P2] Support `StatefulPricer` instruments inside `RiskEngine`.**
   `NettingSet._price_trade()` calls `pricer.price(result)` which is correct for both
@@ -60,27 +59,17 @@ Items are grouped by area; priority labels: `[P1]` urgent / `[P2]` important / `
 
 ## XVA
 
-- [ ] **[P2] FVA (Funding Valuation Adjustment).**
-  Cost of funding uncollateralised exposure. Formula mirrors CVA:
-  `FVA ≈ s_fund × Σ_i EE(t_i) × Δt_i − s_fund × Σ_i |ENE(t_i)| × Δt_i`.
-  Inputs: funding spread (scalar or curve), existing EE/ENE profiles.
-  Implementation: ~20 lines in `exposure/bilateral.py` alongside `cva_approx`.
-  Add `fva` field to `AgreementResult` and `RunResult`.
+- [x] **[P2] FVA (Funding Valuation Adjustment).**
+  Implemented in v1.1. `BilateralExposureCalculator.fva_approx()` accepts
+  `float | HazardCurve` funding spread. `AgreementResult.fva` and `RunResult.total_fva` added.
 
-- [ ] **[P2] MVA (Margin Valuation Adjustment).**
-  Cost of funding posted initial margin over the trade life.
-  `MVA ≈ s_fund × Σ_i E[IM(t_i)] × Δt_i`.
-  IM is already computed per step by `REGIMEngine`; MVA integrates the expected
-  IM profile against the funding spread — same integral structure as FVA.
-  Add `mva` field to `AgreementResult` and `RunResult`.
+- [x] **[P2] MVA (Margin Valuation Adjustment).**
+  Implemented in v1.1. `BilateralExposureCalculator.mva_approx()` + `REGIMEngine.im_time_profile()`
+  produce the declining IM profile. `AgreementResult.mva` and `RunResult.total_mva` added.
 
-- [ ] **[P3] KVA (Capital Valuation Adjustment).**
-  Cost of holding regulatory capital over the trade life.
-  `KVA ≈ CoC × Σ_i K(t_i) × Δt_i` where `K(t_i)` is SA-CCR EAD at each step.
-  Requires running `SACCRCalculator` on simulated portfolio paths (path-wise EAD
-  at each time node). `SACCRCalculator` is already implemented; the missing piece
-  is wiring it into the exposure step loop and adding a `cost_of_capital` param.
-  Add `kva` field to `AgreementResult` and `RunResult`.
+- [x] **[P3] KVA (Capital Valuation Adjustment).**
+  Implemented in v1.1 using flat t=0 SA-CCR EAD profile (documented approximation).
+  `BilateralExposureCalculator.kva_approx()`. `AgreementResult.kva` and `RunResult.total_kva` added.
 
 ---
 

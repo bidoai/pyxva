@@ -71,6 +71,8 @@ class AgreementConfig:
     netting_sets: list = field(default_factory=list)   # list[NettingSetConfig]
     cp_hazard_rate: Optional[float] = None
     own_hazard_rate: Optional[float] = None
+    funding_spread: Optional[float] = None
+    cost_of_capital: float = 0.10
 
 
 @dataclass
@@ -162,6 +164,8 @@ class EngineConfig:
                 netting_sets=netting_sets,
                 cp_hazard_rate=agr_raw.get("cp_hazard_rate"),
                 own_hazard_rate=agr_raw.get("own_hazard_rate"),
+                funding_spread=agr_raw.get("funding_spread"),
+                cost_of_capital=agr_raw.get("cost_of_capital", 0.10),
             ))
 
         out_raw = data.get("outputs", {})

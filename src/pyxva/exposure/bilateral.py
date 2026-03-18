@@ -20,11 +20,31 @@ logger = logging.getLogger(__name__)
 from pyxva.core.paths import SimulationResult
 from .csa import CSATerms
 from .collateral import CollateralAccount, HaircutSchedule
+from .hazard_curve import HazardCurve
 from .margin.vm import REGVMEngine
 from .margin.im import REGIMEngine
 from .margin.simm import SimmSensitivities
 from .metrics import ExposureCalculator
 from .netting import NettingSet
+
+# Type alias used in signatures throughout this module
+_HazardArg = "float | HazardCurve"
+
+
+def _marginal_pd(
+    hazard: "float | HazardCurve",
+    t_prev: float,
+    t: float,
+) -> float:
+    """Q(t_prev) − Q(t): marginal default probability in (t_prev, t].
+
+    Dispatches to HazardCurve.marginal_default_prob for term-structure
+    inputs, or uses exp(-λ t) for a flat scalar hazard rate.
+    """
+    if isinstance(hazard, HazardCurve):
+        return hazard.marginal_default_prob(t_prev, t)
+    # Flat scalar hazard rate
+    return float(np.exp(-hazard * t_prev) - np.exp(-hazard * t))
 
 
 class BilateralExposureCalculator(ExposureCalculator):
@@ -169,20 +189,18 @@ class BilateralExposureCalculator(ExposureCalculator):
         self,
         mtm: np.ndarray,
         time_grid: np.ndarray,
-        hazard_rate: float,
+        hazard_rate: "float | HazardCurve",
         lgd: float = 0.6,
     ) -> float:
-        """Approximate unilateral CVA via hazard rate.
+        """Approximate unilateral CVA via hazard rate or term-structure curve.
 
-        CVA ≈ LGD × Σ_i EE(t_i) × [exp(-λ t_{i-1}) - exp(-λ t_i)]
-
-        This is the piecewise-constant hazard rate approximation. For bilateral
-        CVA, call both ``cva_approx`` (own default) and ``dva_approx``.
+        CVA ≈ LGD × Σ_i EE(t_i) × [Q(t_{i-1}) - Q(t_i)]
 
         Parameters
         ----------
-        hazard_rate : float
-            Counterparty default intensity λ (annualised, e.g. spread/LGD).
+        hazard_rate : float | HazardCurve
+            Counterparty default intensity λ (annualised flat, e.g. spread/LGD)
+            or a ``HazardCurve`` for a term-structure.
         lgd : float
             Loss Given Default (fraction, default 60%).
 
@@ -191,32 +209,204 @@ class BilateralExposureCalculator(ExposureCalculator):
         float
         """
         ee = self.expected_exposure(mtm)
-        return self._integral_cva(time_grid, ee, hazard_rate, lgd)
+        return self._integral_xva(time_grid, ee, hazard_rate, lgd)
 
     def dva_approx(
         self,
         mtm: np.ndarray,
         time_grid: np.ndarray,
-        own_hazard_rate: float,
+        own_hazard_rate: "float | HazardCurve",
         own_lgd: float = 0.6,
     ) -> float:
         """Approximate DVA (own-default benefit).
 
-        DVA ≈ LGD_own × Σ_i |ENE(t_i)| × [exp(-λ_own t_{i-1}) - exp(-λ_own t_i)]
+        DVA ≈ LGD_own × Σ_i |ENE(t_i)| × [Q_own(t_{i-1}) - Q_own(t_i)]
 
         Returns
         -------
         float
         """
         ene_profile = np.abs(self.ene(mtm))
-        return self._integral_cva(time_grid, ene_profile, own_hazard_rate, own_lgd)
+        return self._integral_xva(time_grid, ene_profile, own_hazard_rate, own_lgd)
+
+    def fva_approx(
+        self,
+        mtm: np.ndarray,
+        time_grid: np.ndarray,
+        funding: "float | HazardCurve",
+    ) -> float:
+        """Approximate FVA (Funding Valuation Adjustment).
+
+        Cost of funding uncollateralised exposure and benefit from negative
+        exposure (economically: we borrow from the counterparty):
+
+            FVA ≈ s_fund × Σ_i EE(t_i) × Δt_i
+                - s_fund × Σ_i |ENE(t_i)| × Δt_i
+
+        When ``funding`` is a ``HazardCurve``, the funding spread at each
+        step is implied from the marginal default probability: the integral
+        uses the survival-weighted time measure so that the formula aligns
+        with CVA for consistency in BCVA-FVA frameworks.
+
+        Parameters
+        ----------
+        funding : float | HazardCurve
+            Flat funding spread (annualised, e.g. OIS + funding margin) or
+            a ``HazardCurve`` for term-structure funding spreads.
+
+        Returns
+        -------
+        float — positive = funding cost (unfavourable), negative = funding benefit
+        """
+        ee = self.expected_exposure(mtm)
+        ene_abs = np.abs(self.ene(mtm))
+        fva_cost = self._integral_xva(time_grid, ee, funding, lgd=1.0)
+        fva_benefit = self._integral_xva(time_grid, ene_abs, funding, lgd=1.0)
+        return fva_cost - fva_benefit
+
+    def mva_approx(
+        self,
+        im_profile: np.ndarray,
+        time_grid: np.ndarray,
+        funding: "float | HazardCurve",
+    ) -> float:
+        """Approximate MVA (Margin Valuation Adjustment).
+
+        Cost of funding initial margin over the trade life:
+
+            MVA ≈ s_fund × Σ_i IM(t_i) × Δt_i
+
+        Parameters
+        ----------
+        im_profile : np.ndarray, shape (T,)
+            Expected IM at each time step (e.g. from ``REGIMEngine.im_time_profile``).
+        funding : float | HazardCurve
+            Flat funding spread or term-structure ``HazardCurve``.
+
+        Returns
+        -------
+        float — non-negative funding cost
+        """
+        return self._integral_xva(time_grid, im_profile, funding, lgd=1.0)
+
+    def kva_approx(
+        self,
+        ead_t0: float,
+        time_grid: np.ndarray,
+        cost_of_capital: float = 0.10,
+    ) -> float:
+        """Approximate KVA (Capital Valuation Adjustment).
+
+        Cost of holding regulatory capital over the trade life using a flat
+        t=0 SA-CCR EAD profile (documented approximation):
+
+            KVA ≈ CoC × EAD_0 × T
+
+        where T = time_grid[-1].
+
+        Parameters
+        ----------
+        ead_t0 : float
+            SA-CCR Exposure-at-Default at t=0 (from ``SACCRCalculator``).
+        time_grid : np.ndarray, shape (T,)
+        cost_of_capital : float
+            Annual cost-of-capital rate (default 10%).
+
+        Returns
+        -------
+        float
+        """
+        T = float(time_grid[-1] - time_grid[0])
+        return float(cost_of_capital * ead_t0 * T)
+
+    def xva_attribution(
+        self,
+        mtm: np.ndarray,
+        time_grid: np.ndarray,
+        hazard: "float | HazardCurve",
+        funding: "float | HazardCurve | None" = None,
+        im_profile: "np.ndarray | None" = None,
+        lgd: float = 0.6,
+        own_hazard: "float | HazardCurve | None" = None,
+    ) -> dict:
+        """Per-time-bucket xVA attribution waterfall.
+
+        Returns the contribution of each time bucket [t_{i-1}, t_i] to the
+        total xVA, enabling drill-down by tenor region.
+
+        Parameters
+        ----------
+        mtm : np.ndarray, shape (n_paths, T)
+        time_grid : np.ndarray, shape (T,)
+        hazard : float | HazardCurve
+            Counterparty hazard rate / curve (for CVA).
+        funding : float | HazardCurve | None
+            Funding spread / curve (for FVA/MVA). If None, FVA/MVA not computed.
+        im_profile : np.ndarray, shape (T,) | None
+            Expected IM profile for MVA attribution. If None, MVA not computed.
+        lgd : float
+            Loss Given Default for CVA/DVA.
+        own_hazard : float | HazardCurve | None
+            Own hazard rate / curve for DVA.
+
+        Returns
+        -------
+        dict with keys:
+            'time'  : np.ndarray, shape (T-1,) — bucket midpoints
+            'cva'   : np.ndarray, shape (T-1,) — CVA per bucket
+            'dva'   : np.ndarray, shape (T-1,) — DVA per bucket (zeros if no own_hazard)
+            'fva'   : np.ndarray, shape (T-1,) — FVA per bucket (zeros if no funding)
+            'mva'   : np.ndarray, shape (T-1,) — MVA per bucket (zeros if no im_profile/funding)
+            'total' : np.ndarray, shape (T-1,) — CVA - DVA + FVA + MVA per bucket
+        """
+        T = len(time_grid)
+        n_buckets = T - 1
+
+        ee = self.expected_exposure(mtm)
+        ene_abs = np.abs(self.ene(mtm))
+
+        cva_buckets = np.empty(n_buckets)
+        dva_buckets = np.zeros(n_buckets)
+        fva_buckets = np.zeros(n_buckets)
+        mva_buckets = np.zeros(n_buckets)
+        bucket_mids = np.empty(n_buckets)
+
+        for i in range(n_buckets):
+            t0 = float(time_grid[i])
+            t1 = float(time_grid[i + 1])
+            bucket_mids[i] = 0.5 * (t0 + t1)
+
+            pd = _marginal_pd(hazard, t0, t1)
+            cva_buckets[i] = lgd * ee[i + 1] * pd
+
+            if own_hazard is not None:
+                pd_own = _marginal_pd(own_hazard, t0, t1)
+                dva_buckets[i] = lgd * ene_abs[i + 1] * pd_own
+
+            if funding is not None:
+                dt = t1 - t0
+                fund_pd = _marginal_pd(funding, t0, t1)
+                fva_buckets[i] = (ee[i + 1] - ene_abs[i + 1]) * fund_pd
+                if im_profile is not None:
+                    mva_buckets[i] = im_profile[i + 1] * fund_pd
+
+        total_buckets = cva_buckets - dva_buckets + fva_buckets + mva_buckets
+
+        return {
+            "time": bucket_mids,
+            "cva": cva_buckets,
+            "dva": dva_buckets,
+            "fva": fva_buckets,
+            "mva": mva_buckets,
+            "total": total_buckets,
+        }
 
     def bilateral_cva(
         self,
         mtm: np.ndarray,
         time_grid: np.ndarray,
-        cp_hazard_rate: float,
-        own_hazard_rate: float,
+        cp_hazard_rate: "float | HazardCurve",
+        own_hazard_rate: "float | HazardCurve",
         cp_lgd: float = 0.6,
         own_lgd: float = 0.6,
     ) -> dict:
@@ -241,8 +431,12 @@ class BilateralExposureCalculator(ExposureCalculator):
         collateral_balance: np.ndarray | None = None,
         mpor: float = 10 / 252,
         confidence: float = 0.95,
-        cp_hazard_rate: float | None = None,
-        own_hazard_rate: float | None = None,
+        cp_hazard_rate: "float | HazardCurve | None" = None,
+        own_hazard_rate: "float | HazardCurve | None" = None,
+        funding_spread: "float | HazardCurve | None" = None,
+        im_profile: "np.ndarray | None" = None,
+        cost_of_capital: float = 0.10,
+        ead_t0: float = 0.0,
     ) -> dict:
         """Full bilateral exposure summary.
 
@@ -274,6 +468,22 @@ class BilateralExposureCalculator(ExposureCalculator):
                 net_mtm, time_grid, cp_hazard_rate, own_hazard_rate
             )
             result.update(xva)
+        elif cp_hazard_rate is not None:
+            result["cva"] = self.cva_approx(net_mtm, time_grid, cp_hazard_rate)
+            result["dva"] = 0.0
+            result["bcva"] = result["cva"]
+
+        result["fva"] = 0.0
+        result["mva"] = 0.0
+        result["kva"] = 0.0
+
+        if funding_spread is not None:
+            result["fva"] = self.fva_approx(net_mtm, time_grid, funding_spread)
+            if im_profile is not None:
+                result["mva"] = self.mva_approx(im_profile, time_grid, funding_spread)
+
+        if ead_t0 > 0.0:
+            result["kva"] = self.kva_approx(ead_t0, time_grid, cost_of_capital)
 
         return result
 
@@ -282,17 +492,34 @@ class BilateralExposureCalculator(ExposureCalculator):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _integral_cva(
+    def _integral_xva(
         time_grid: np.ndarray,
-        ee_profile: np.ndarray,
-        hazard_rate: float,
+        profile: np.ndarray,
+        hazard: "float | HazardCurve",
         lgd: float,
     ) -> float:
-        """Discrete integral: LGD × Σ EE(t_i) × [PD(t_{i-1}, t_i)]."""
+        """Discrete integral: lgd × Σ profile(t_i) × [Q(t_{i-1}) - Q(t_i)].
+
+        Shared helper for CVA, DVA, FVA, and MVA. All four xVA integrals
+        share this survival-probability-weighted structure.
+
+        Parameters
+        ----------
+        time_grid : np.ndarray, shape (T,)
+        profile : np.ndarray, shape (T,)
+            EE, |ENE|, or IM profile.
+        hazard : float | HazardCurve
+            Flat hazard rate λ (annualised) or term-structure HazardCurve.
+            For a flat rate, Q(t) = exp(-λ t).
+        lgd : float
+            Scaling factor (LGD for CVA/DVA; 1.0 for FVA/MVA).
+        """
         total = 0.0
         for i in range(1, len(time_grid)):
-            pd_i = np.exp(-hazard_rate * time_grid[i - 1]) - np.exp(-hazard_rate * time_grid[i])
-            total += ee_profile[i] * pd_i
+            t0 = float(time_grid[i - 1])
+            t1 = float(time_grid[i])
+            pd_i = _marginal_pd(hazard, t0, t1)
+            total += profile[i] * pd_i
         return float(lgd * total)
 
 
@@ -349,8 +576,10 @@ class ISDAExposureCalculator:
         confidence: float = 0.95,
         im_trades: list[dict] | None = None,
         im_sensitivities: SimmSensitivities | None = None,
-        cp_hazard_rate: float | None = None,
-        own_hazard_rate: float | None = None,
+        cp_hazard_rate: "float | HazardCurve | None" = None,
+        own_hazard_rate: "float | HazardCurve | None" = None,
+        funding_spread: "float | HazardCurve | None" = None,
+        cost_of_capital: float = 0.10,
     ) -> dict:
         """Execute the full bilateral exposure pipeline.
 
@@ -436,6 +665,14 @@ class ISDAExposureCalculator:
         # 5. Collateralised exposure paths
         total_lagged = lagged_csb + (im if im is not None else 0.0)
 
+        # 5b. IM time profile for MVA (if im_engine and im_trades provided)
+        im_profile: np.ndarray | None = None
+        if self.im_engine is not None and im_trades is not None and funding_spread is not None:
+            try:
+                im_profile = self.im_engine.im_time_profile(im_trades, time_grid)
+            except Exception:
+                logger.warning("im_time_profile() failed; MVA will be 0")
+
         # 6. Bilateral metrics
         summary = self._calc.bilateral_summary(
             net_mtm=net_mtm,
@@ -445,6 +682,9 @@ class ISDAExposureCalculator:
             confidence=confidence,
             cp_hazard_rate=cp_hazard_rate,
             own_hazard_rate=own_hazard_rate,
+            funding_spread=funding_spread,
+            im_profile=im_profile,
+            cost_of_capital=cost_of_capital,
         )
 
         summary.update(

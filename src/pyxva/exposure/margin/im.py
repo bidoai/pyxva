@@ -167,6 +167,50 @@ class REGIMEngine:
     # Dispatch
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # Time-varying IM profile
+    # ------------------------------------------------------------------
+
+    def im_time_profile(
+        self,
+        trades: list[dict],
+        time_grid: np.ndarray,
+    ) -> np.ndarray:
+        """Compute a time-varying Schedule IM profile for MVA.
+
+        At each time step t, recalculates Schedule IM using the residual
+        maturity of each trade: ``residual_maturity = max(0, trade.maturity - t)``.
+        This produces a naturally declining profile as trades approach maturity,
+        which is used as E[IM(t)] in the MVA integral.
+
+        Parameters
+        ----------
+        trades : list[dict]
+            Each dict: ``asset_class``, ``gross_notional``,
+            ``maturity`` (years from today), ``net_replacement_cost``.
+        time_grid : np.ndarray, shape (T,)
+            Simulation time grid in years.
+
+        Returns
+        -------
+        np.ndarray, shape (T,)
+            Scalar IM at each time step (deterministic declining profile).
+            Returns 0 for steps where all trades have matured.
+        """
+        profile = np.empty(len(time_grid))
+        for j, t in enumerate(time_grid):
+            stepped_trades = []
+            for trade in trades:
+                residual = float(trade.get("maturity", 0.0)) - float(t)
+                if residual > 0:
+                    stepped_trades.append({**trade, "maturity": residual})
+            if stepped_trades:
+                im = self.schedule_im(stepped_trades, shape=None)
+                profile[j] = float(im)
+            else:
+                profile[j] = 0.0
+        return profile
+
     def compute_im(
         self,
         trades: list[dict] | None = None,

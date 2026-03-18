@@ -2,6 +2,7 @@ from .metrics import ExposureCalculator
 from .netting import NettingSet
 from .csa import CSATerms, MarginRegime, IMModel
 from .collateral import CollateralAccount, HaircutSchedule
+from .hazard_curve import HazardCurve
 from .margin import REGVMEngine, REGIMEngine, SimmSensitivities, SimmCalculator
 from .bilateral import BilateralExposureCalculator, ISDAExposureCalculator
 from .saccr import SACCRCalculator, SACCRTrade
@@ -14,6 +15,7 @@ __all__ = [
     "IMModel",
     "CollateralAccount",
     "HaircutSchedule",
+    "HazardCurve",
     "REGVMEngine",
     "REGIMEngine",
     "SimmSensitivities",

@@ -135,6 +135,9 @@ class RiskEngine:
         total_cva = sum(r.cva for r in agr_results.values())
         total_dva = sum(r.dva for r in agr_results.values())
         total_bcva = sum(r.bcva for r in agr_results.values())
+        total_fva = sum(r.fva for r in agr_results.values())
+        total_mva = sum(r.mva for r in agr_results.values())
+        total_kva = sum(r.kva for r in agr_results.values())
 
         return RunResult(
             config=config,
@@ -144,6 +147,9 @@ class RiskEngine:
             total_cva=total_cva,
             total_dva=total_dva,
             total_bcva=total_bcva,
+            total_fva=total_fva,
+            total_mva=total_mva,
+            total_kva=total_kva,
         )
 
 
@@ -268,12 +274,14 @@ def _compute_agreement_result(
     """Compute full exposure result for one Agreement. Runs in a worker process."""
     logger.info("Computing exposure for agreement %s", agreement.id)
 
-    # Find the matching AgreementConfig for hazard rates
+    # Find the matching AgreementConfig for hazard rates and xVA params
     agr_cfg = next(
         (a for a in config.agreements if a.id == agreement.id), None
     )
     cp_hazard = agr_cfg.cp_hazard_rate if agr_cfg else None
     own_hazard = agr_cfg.own_hazard_rate if agr_cfg else None
+    funding_spread = agr_cfg.funding_spread if agr_cfg else None
+    cost_of_capital = agr_cfg.cost_of_capital if agr_cfg else 0.10
 
     # Compute netting set pre-collateral summaries
     calc = ExposureCalculator()
@@ -309,6 +317,8 @@ def _compute_agreement_result(
         confidence=confidence,
         cp_hazard_rate=cp_hazard,
         own_hazard_rate=own_hazard,
+        funding_spread=funding_spread,
+        cost_of_capital=cost_of_capital,
     )
 
     raw_mtm = agg_mtm if write_raw else None
@@ -325,6 +335,9 @@ def _compute_agreement_result(
         cva=float(out.get("cva", 0.0)),
         dva=float(out.get("dva", 0.0)),
         bcva=float(out.get("bcva", 0.0)),
+        fva=float(out.get("fva", 0.0)),
+        mva=float(out.get("mva", 0.0)),
+        kva=float(out.get("kva", 0.0)),
         pse=float(out.get("pse", 0.0)),
         epe=float(out.get("epe", 0.0)),
         eepe=float(out.get("eepe", 0.0)),
