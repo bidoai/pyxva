@@ -152,7 +152,7 @@ class HullWhite1F(StochasticModel):
         self.r0 = float(curve.zero_rate(0.0))
         logger.info(
             "HullWhite1F: fitting theta to yield curve (%s, %d tenors), r0=%.4f",
-            curve.interpolation.value, len(curve._t), self.r0,
+            curve.interpolation.value, len(curve.tenors), self.r0,
         )
 
         # Fit theta(t) to match the initial term structure exactly

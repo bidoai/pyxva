@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from risk_analytics.core.market_data import MarketData, ScenarioBump
-from risk_analytics.pipeline.config import EngineConfig
+from risk_analytics.pipeline.config import EngineConfig, TradeFactory
 from risk_analytics.pipeline.engine import RiskEngine
 from risk_analytics.pipeline.result import AgreementResult, RunResult
 
@@ -266,3 +266,86 @@ def test_engine_config_from_yaml(tmp_path):
     cfg = EngineConfig.from_yaml(str(config_path))
     assert cfg.simulation.n_paths == 500
     assert cfg.agreements[0].id == "AGR_001"
+
+
+# ---------------------------------------------------------------------------
+# Test 14: RiskEngine end-to-end with StatefulPricer (BarrierOption)
+# ---------------------------------------------------------------------------
+
+def test_barrier_option_e2e():
+    """Full pipeline handles a path-dependent StatefulPricer correctly.
+
+    Registers BarrierOption via TradeFactory.register(), runs RiskEngine,
+    and asserts that EE/CVA profiles are well-formed.
+    """
+    from risk_analytics.pricing.exotic.barrier_option import BarrierOption
+
+    @TradeFactory.register("BarrierOption")
+    def _build_barrier(params):
+        return BarrierOption(
+            strike=params["strike"],
+            barrier=params["barrier"],
+            expiry=params["expiry"],
+            barrier_type=params.get("barrier_type", "down-out"),
+            risk_free_rate=params.get("risk_free_rate", 0.04),
+        )
+
+    config = {
+        "simulation": {
+            "n_paths": 300,
+            "seed": 7,
+            "time_grid": {"type": "standard"},
+        },
+        "market_data": {
+            "spots": {"SPX": 100.0},
+            "vols": {"SPX": 0.25},
+        },
+        "models": [
+            {"name": "eq", "type": "GBM", "params": {"S0": 100.0, "mu": 0.05, "sigma": 0.25}},
+        ],
+        "agreements": [
+            {
+                "id": "AGR_BARRIER",
+                "counterparty": "CP_B",
+                "cp_hazard_rate": 0.01,
+                "own_hazard_rate": 0.005,
+                "csa": {"mta": 0.0, "threshold": 0.0, "margin_regime": "REGVM"},
+                "netting_sets": [
+                    {
+                        "id": "NS_B",
+                        "trades": [
+                            {
+                                "id": "barrier_1",
+                                "type": "BarrierOption",
+                                "model": "eq",
+                                "params": {
+                                    "strike": 100.0,
+                                    "barrier": 80.0,
+                                    "expiry": 1.0,
+                                    "risk_free_rate": 0.04,
+                                },
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+        "outputs": {"confidence": 0.95, "write_raw_paths": False},
+    }
+
+    try:
+        engine = RiskEngine(config)
+        result = engine.run()
+
+        assert "AGR_BARRIER" in result.agreement_results
+        agr = result.agreement_results["AGR_BARRIER"]
+        T = len(result.time_grid)
+
+        assert agr.ee_profile.shape == (T,)
+        assert agr.pfe_profile.shape == (T,)
+        assert np.all(agr.ee_profile >= -1e-10)
+        assert np.isfinite(agr.cva)
+        assert np.isfinite(agr.dva)
+        assert agr.cva >= 0.0
+    finally:
+        TradeFactory._CUSTOM_REGISTRY.pop("BarrierOption", None)

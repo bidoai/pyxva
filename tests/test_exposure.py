@@ -6,6 +6,7 @@ from risk_analytics.core import MonteCarloEngine, TimeGrid
 from risk_analytics.models import GeometricBrownianMotion, HullWhite1F
 from risk_analytics.pricing import EuropeanOption, InterestRateSwap
 from risk_analytics.exposure import ExposureCalculator, NettingSet
+from risk_analytics.portfolio.trade import Trade
 
 N_PATHS = 2000
 SEED = 42
@@ -83,7 +84,7 @@ class TestNettingSet:
         """Single trade: netted MTM should equal trade MTM."""
         swap = InterestRateSwap(fixed_rate=0.05, maturity=5.0, notional=1e6, payer=True)
         ns = NettingSet("test")
-        ns.add_trade("swap1", swap)
+        ns.add_trade(Trade(id="swap1", pricer=swap, model_name="HullWhite1F"))
         net = ns.net_mtm(self.results)
         direct = swap.price(self.results["HullWhite1F"])
         assert np.allclose(net, direct)
@@ -94,8 +95,8 @@ class TestNettingSet:
         receiver = InterestRateSwap(fixed_rate=0.03, maturity=5.0, notional=1e6, payer=False)
 
         ns = NettingSet("test")
-        ns.add_trade("payer", payer)
-        ns.add_trade("receiver", receiver)
+        ns.add_trade(Trade(id="payer", pricer=payer, model_name="HullWhite1F"))
+        ns.add_trade(Trade(id="receiver", pricer=receiver, model_name="HullWhite1F"))
 
         calc = ExposureCalculator()
         r = self.results["HullWhite1F"]
@@ -115,7 +116,7 @@ class TestNettingSet:
     def test_trade_ids(self):
         ns = NettingSet("ns1")
         swap = InterestRateSwap(fixed_rate=0.05, maturity=5.0, notional=1e6)
-        ns.add_trade("trade_A", swap)
+        ns.add_trade(Trade(id="trade_A", pricer=swap, model_name="HullWhite1F"))
         assert ns.trade_ids == ["trade_A"]
 
     def test_empty_netting_set_raises(self):
@@ -126,7 +127,53 @@ class TestNettingSet:
     def test_exposure_summary_keys(self):
         swap = InterestRateSwap(fixed_rate=0.05, maturity=5.0, notional=1e6)
         ns = NettingSet("test")
-        ns.add_trade("swap1", swap)
+        ns.add_trade(Trade(id="swap1", pricer=swap, model_name="HullWhite1F"))
         summary = ns.exposure(self.results, self.grid)
         for key in ("ee_profile", "pfe_profile", "pse", "epe", "net_mtm"):
             assert key in summary
+
+    def test_add_trade_rejects_non_trade(self):
+        """Passing anything other than a Trade object must raise TypeError."""
+        ns = NettingSet("test")
+        with pytest.raises(TypeError, match="Trade object"):
+            ns.add_trade("swap1")  # type: ignore[arg-type]
+
+    def test_wrong_model_name_raises(self):
+        """A trade whose model_name is not in simulation_results raises KeyError."""
+        swap = InterestRateSwap(fixed_rate=0.05, maturity=5.0, notional=1e6)
+        ns = NettingSet("test")
+        ns.add_trade(Trade(id="swap1", pricer=swap, model_name="NONEXISTENT_MODEL"))
+        with pytest.raises(KeyError, match="NONEXISTENT_MODEL"):
+            ns.net_mtm(self.results)
+
+    def test_correct_model_used_when_names_overlap(self):
+        """Each trade must price against its declared model, not another model with
+        compatible factor names."""
+        # Two GBM models with identical factor 'S' but very different spot prices.
+        model_lo = GeometricBrownianMotion(S0=50.0, mu=0.0, sigma=0.01)
+        model_hi = GeometricBrownianMotion(S0=200.0, mu=0.0, sigma=0.01)
+        grid = TimeGrid.uniform(1.0, 10)
+        engine = MonteCarloEngine(200, seed=0)
+        results = engine.run([model_lo, model_hi], grid)
+        # Both keyed by their model names: 'GBM' — but run() uses model.name as key,
+        # which for both is 'GBM'. We rename one via a wrapper to give distinct keys.
+        # Use the pipeline's _ModelWrapper pattern directly.
+        from risk_analytics.pipeline.engine import _ModelWrapper
+        model_lo_w = _ModelWrapper(model_lo, "eq_lo")
+        model_hi_w = _ModelWrapper(model_hi, "eq_hi")
+        results = engine.run([model_lo_w, model_hi_w], grid)
+
+        option_lo = EuropeanOption(strike=50.0, expiry=1.0, sigma=0.01, risk_free_rate=0.0)
+        option_hi = EuropeanOption(strike=200.0, expiry=1.0, sigma=0.01, risk_free_rate=0.0)
+
+        ns = NettingSet("test")
+        ns.add_trade(Trade(id="opt_lo", pricer=option_lo, model_name="eq_lo"))
+        ns.add_trade(Trade(id="opt_hi", pricer=option_hi, model_name="eq_hi"))
+
+        net = ns.net_mtm(results)
+
+        # Price each trade directly on its declared model to verify NettingSet matches.
+        expected = (
+            option_lo.price(results["eq_lo"]) + option_hi.price(results["eq_hi"])
+        )
+        np.testing.assert_allclose(net, expected)

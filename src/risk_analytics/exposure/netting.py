@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import numpy as np
 
-from risk_analytics.core.base import Pricer
 from risk_analytics.core.paths import SimulationResult
 from .metrics import ExposureCalculator
 
@@ -21,54 +20,36 @@ class NettingSet:
 
     def __init__(self, name: str = "default") -> None:
         self.name = name
-        self._trades: list[tuple[str, Pricer]] = []
+        self._trades: list = []  # list[Trade]
 
     @property
     def id(self) -> str:
         """Alias for name — used by Agreement for dict keying."""
         return self.name
 
-    def add_trade(self, trade_id_or_trade, pricer: Pricer = None) -> None:
-        """Add a trade to the netting set.
-
-        Accepts two calling conventions:
-
-        1. Legacy: ``add_trade(trade_id: str, pricer: Pricer)``
-        2. New:    ``add_trade(trade: Trade)``  (Trade object, no second arg)
-
-        In both cases the trade is stored as a ``(trade_id, pricer)`` tuple
-        so that ``net_mtm()`` continues to work unchanged.
+    def add_trade(self, trade) -> None:
+        """Add a Trade to the netting set.
 
         Parameters
         ----------
-        trade_id_or_trade : str or Trade
-            Either a string trade ID (legacy) or a Trade object.
-        pricer : Pricer, optional
-            Pricing model for the trade. Required when first arg is a str.
+        trade : Trade
+            A Trade object binding a pricer to its model via ``trade.model_name``.
         """
-        # Import here to avoid circular imports at module level
         from risk_analytics.portfolio.trade import Trade as _Trade
 
-        if isinstance(trade_id_or_trade, _Trade):
-            trade = trade_id_or_trade
-            self._trades.append((trade.id, trade.pricer))
-        else:
-            # Legacy: (str, Pricer)
-            if pricer is None:
-                raise ValueError(
-                    "pricer must be provided when trade_id_or_trade is a string."
-                )
-            self._trades.append((trade_id_or_trade, pricer))
+        if not isinstance(trade, _Trade):
+            raise TypeError(
+                f"add_trade() requires a Trade object; got {type(trade).__name__}. "
+                "Construct one with: Trade(id=..., pricer=..., model_name=...)"
+            )
+        self._trades.append(trade)
 
     def net_mtm(self, simulation_results: dict[str, SimulationResult]) -> np.ndarray:
         """Compute the net MTM across all trades in the netting set.
 
-        Each pricer is called with the SimulationResult matching its model.
-        If a pricer requires a specific model result, the simulation_results dict
-        should contain the key matching that model's name.
-
-        The engine tries each model's result until one is compatible. To be
-        explicit, pricers should accept exactly the SimulationResult they need.
+        Each trade's pricer is called with the SimulationResult identified by
+        ``trade.model_name``. A KeyError is raised immediately if a trade's
+        declared model is not present in ``simulation_results``.
 
         Parameters
         ----------
@@ -84,12 +65,14 @@ class NettingSet:
             raise ValueError("NettingSet has no trades.")
 
         net = None
-        for trade_id, pricer in self._trades:
-            mtm = self._price_trade(pricer, simulation_results, trade_id)
-            if net is None:
-                net = mtm
-            else:
-                net = net + mtm
+        for trade in self._trades:
+            if trade.model_name not in simulation_results:
+                raise KeyError(
+                    f"Trade '{trade.id}': model '{trade.model_name}' not found in "
+                    f"simulation results. Available: {list(simulation_results)}"
+                )
+            mtm = trade.pricer.price(simulation_results[trade.model_name])
+            net = mtm if net is None else net + mtm
 
         return net
 
@@ -114,23 +97,4 @@ class NettingSet:
 
     @property
     def trade_ids(self) -> list[str]:
-        return [tid for tid, _ in self._trades]
-
-    def _price_trade(
-        self,
-        pricer: Pricer,
-        results: dict[str, SimulationResult],
-        trade_id: str,
-    ) -> np.ndarray:
-        """Try to price a trade against available simulation results."""
-        errors = []
-        for model_name, result in results.items():
-            try:
-                return pricer.price(result)
-            except (KeyError, ValueError, IndexError) as e:
-                errors.append(f"  {model_name}: {e}")
-
-        raise RuntimeError(
-            f"Could not price trade '{trade_id}' with any available simulation result.\n"
-            + "\n".join(errors)
-        )
+        return [t.id for t in self._trades]

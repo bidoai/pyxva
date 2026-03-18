@@ -344,8 +344,8 @@ def _build_models(config: EngineConfig, market_data: MarketData, time_grid: np.n
             if m_cfg.calibrate_to in market_data.curves:
                 curve = market_data.curves[m_cfg.calibrate_to]
                 calib_data = {
-                    "tenors": list(curve._t),
-                    "zero_rates": list(curve._z),
+                    "tenors": list(curve.tenors),
+                    "zero_rates": list(curve.zero_rates),
                     "time_grid": time_grid,
                 }
                 model.calibrate(calib_data)
@@ -442,6 +442,3 @@ def _max_maturity(config: EngineConfig) -> float:
     return max_mat
 
 
-def _make_aggregate_ns(agreement: Agreement) -> NettingSet:
-    """Not used — replaced by _AggregateNettingSet."""
-    raise NotImplementedError

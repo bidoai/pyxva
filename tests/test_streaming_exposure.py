@@ -154,3 +154,56 @@ class TestStreamingExposureEngine:
         engine = StreamingExposureEngine(trades, _csa_zero_th())
         out = engine.run(result)
         np.testing.assert_allclose(out.ee_profile, 0.0, atol=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# REGVMStepper property-based invariants
+# ---------------------------------------------------------------------------
+
+class TestREGVMStepperProperties:
+    """Property tests over random MTM paths — not hand-crafted inputs."""
+
+    def test_csb_tracks_mtm_exactly_zero_threshold_zero_mta(self):
+        """With threshold=0 and mta=0, CSB must equal V(t) after every step."""
+        rng = np.random.default_rng(42)
+        csa = _csa_zero_th()
+        n_paths, n_steps = 500, 60
+        stepper = REGVMStepper(csa, n_paths=n_paths)
+
+        for _ in range(n_steps):
+            mtm = rng.normal(0, 100, size=n_paths)
+            stepper.step(mtm)
+            np.testing.assert_allclose(stepper.csb, mtm, atol=1e-10,
+                err_msg="CSB must equal V(t) at every step when threshold=mta=0")
+
+    def test_post_margin_ce_zero_for_positive_mtm(self):
+        """With threshold=0 and mta=0, CE must be 0 for all positive-MTM paths."""
+        rng = np.random.default_rng(99)
+        csa = _csa_zero_th()
+        n_paths, n_steps = 500, 40
+        stepper = REGVMStepper(csa, n_paths=n_paths)
+
+        for _ in range(n_steps):
+            mtm = rng.normal(50, 30, size=n_paths)  # mostly positive
+            exposure = stepper.step(mtm)
+            # CE = max(V - CSB, 0); since CSB=V after step, CE must be 0
+            positive = mtm > 0
+            np.testing.assert_allclose(exposure[positive], 0.0, atol=1e-10,
+                err_msg="Post-margin CE must be 0 for positive MTM paths when fully collateralised")
+
+    def test_initial_csb_equals_net_ia(self):
+        """Initial CSB (before any step) must equal ia_counterparty - ia_party."""
+        ia_cpty, ia_party = 100.0, 30.0
+        csa = CSATerms(
+            counterparty_id="CP",
+            margin_regime=MarginRegime.REGVM,
+            threshold_party=0.0,
+            threshold_counterparty=0.0,
+            mta_party=0.0,
+            mta_counterparty=0.0,
+            ia_party=ia_party,
+            ia_counterparty=ia_cpty,
+        )
+        stepper = REGVMStepper(csa, n_paths=50)
+        expected_floor = ia_cpty - ia_party
+        np.testing.assert_allclose(stepper.csb, expected_floor, atol=1e-12)

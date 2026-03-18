@@ -19,6 +19,7 @@ from risk_analytics.exposure import (
     ISDAExposureCalculator,
     NettingSet,
 )
+from risk_analytics.portfolio.trade import Trade
 
 N_PATHS = 2000
 SEED = 42
@@ -237,7 +238,7 @@ class TestREGVMEngine:
     def test_collateralised_exposure_less_than_uncoll(self):
         results, grid = rates_setup()
         ns = NettingSet("test")
-        ns.add_trade("swap", InterestRateSwap(0.05, 5.0, 1e6))
+        ns.add_trade(Trade(id="swap", pricer=InterestRateSwap(0.05, 5.0, 1e6), model_name="HullWhite1F"))
         net_mtm = ns.net_mtm(results)
 
         csa = CSATerms.regvm_standard("CP")
@@ -348,7 +349,7 @@ class TestBilateralExposureCalculator:
     def setup_method(self):
         results, self.grid = rates_setup()
         ns = NettingSet("test")
-        ns.add_trade("swap", InterestRateSwap(0.05, 5.0, 1e6))
+        ns.add_trade(Trade(id="swap", pricer=InterestRateSwap(0.05, 5.0, 1e6), model_name="HullWhite1F"))
         self.mtm = ns.net_mtm(results)
         self.calc = BilateralExposureCalculator()
 
@@ -422,8 +423,8 @@ class TestISDAExposureCalculator:
     def setup_method(self):
         self.results, self.grid = rates_setup()
         self.ns = NettingSet("test_ns")
-        self.ns.add_trade("payer_swap", InterestRateSwap(0.05, 5.0, notional=1e6, payer=True))
-        self.ns.add_trade("receiver_swap", InterestRateSwap(0.03, 5.0, notional=5e5, payer=False))
+        self.ns.add_trade(Trade(id="payer_swap", pricer=InterestRateSwap(0.05, 5.0, notional=1e6, payer=True), model_name="HullWhite1F"))
+        self.ns.add_trade(Trade(id="receiver_swap", pricer=InterestRateSwap(0.03, 5.0, notional=5e5, payer=False), model_name="HullWhite1F"))
         self.csa = CSATerms.regvm_standard("CP_BANK", mta=0.1)
 
     def test_run_returns_all_keys(self):
@@ -484,7 +485,7 @@ class TestISDAExposureCalculator:
     def test_legacy_csa_larger_threshold_means_less_collateral(self):
         """Legacy CSA: with a very large threshold, CSB is effectively zero → EE ≈ uncoll EE."""
         ns = NettingSet("ns")
-        ns.add_trade("swap", InterestRateSwap(0.05, 5.0, 1e6, payer=True))
+        ns.add_trade(Trade(id="swap", pricer=InterestRateSwap(0.05, 5.0, 1e6, payer=True), model_name="HullWhite1F"))
 
         # REGVM: zero threshold → CSB tracks full MTM
         csa_regvm = CSATerms.regvm_standard("CP", mta=0.0)

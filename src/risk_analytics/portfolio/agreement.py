@@ -33,12 +33,7 @@ class Agreement:
         """Flat list of all Trade objects across all netting sets."""
         trades = []
         for ns in self.netting_sets:
-            for trade_id, pricer in ns._trades:
-                if isinstance(pricer, Trade):
-                    trades.append(pricer)
-                else:
-                    # backward-compat: bare Pricer stored directly in NettingSet
-                    trades.append(Trade(id=trade_id, pricer=pricer, model_name=""))
+            trades.extend(ns._trades)
         return trades
 
     def all_cashflow_times(self) -> list:

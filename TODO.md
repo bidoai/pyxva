@@ -125,6 +125,13 @@ Items are grouped by area; priority labels: `[P1]` urgent / `[P2]` important / `
   `StreamingExposureEngine` and `ISDAExposureCalculator` should produce identical (up to
   float precision) EE profiles for plain vanilla swaps with zero threshold/MTA.
 
+- [ ] **[P2] `calibrate_to` missing curve should raise, not warn.**
+  When a model config's `calibrate_to` key references a curve not present in
+  `MarketData`, `pipeline/engine.py` logs a warning and continues with an uncalibrated
+  model. An uncalibrated Hull-White model produces systematically wrong CVA/EE profiles.
+  Fix: raise `ValueError` with a clear message identifying the missing curve name.
+  Add a test that asserts the error is raised (vs. silently proceeding).
+
 ---
 
 ## Documentation / DX

@@ -53,6 +53,70 @@ class TestHullWhite1F:
         assert self.model.a == 0.2
         assert self.model.sigma == 0.02
 
+    def test_discount_factor_flat_curve_at_t0(self):
+        """At t=0 on a flat 5% curve, P(0,T) from affine formula must equal exp(-0.05*T)."""
+        from risk_analytics.core.yield_curve import YieldCurve
+        r0 = 0.05
+        tenors = [0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 30.0]
+        rates = [r0] * len(tenors)
+        curve = YieldCurve(tenors, rates)
+
+        model = HullWhite1F(a=0.1, sigma=0.01, r0=r0)
+        model._curve = curve
+
+        T_vals = np.array([0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 30.0])
+        r_t = np.array([r0])  # single path at t=0
+
+        for T in T_vals:
+            hw_df = model.discount_factor(t=0.0, T_mat=T, r_t=r_t).item()
+            exact_df = np.exp(-r0 * T)
+            assert abs(hw_df - exact_df) < 1e-10, (
+                f"discount_factor(0, {T}, r0) = {hw_df:.10f}; "
+                f"expected exp(-0.05*{T}) = {exact_df:.10f}"
+            )
+
+    def test_discount_factor_boundary_p_t_t_equals_one(self):
+        """P(t, T) = 1 when T == t for any short rate r(t).
+
+        This is a hard mathematical fact: the value of a ZCB at its own
+        maturity is 1 regardless of the prevailing rate.
+        """
+        from risk_analytics.core.yield_curve import YieldCurve
+        tenors = [0.5, 1.0, 2.0, 5.0, 10.0]
+        rates = [0.030, 0.035, 0.040, 0.045, 0.048]
+        curve = YieldCurve(tenors, rates)
+        grid = np.linspace(0.0, 10.0, 100)
+
+        model = HullWhite1F(a=0.15, sigma=0.01, r0=0.030)
+        model.calibrate({"tenors": tenors, "zero_rates": rates, "time_grid": grid})
+
+        r_vals = np.array([-0.02, 0.0, 0.03, 0.05, 0.10])
+        for t_mat in [0.5, 1.0, 2.0, 5.0]:
+            hw_df = model.discount_factor(t=t_mat, T_mat=t_mat, r_t=r_vals)
+            np.testing.assert_allclose(hw_df, 1.0, atol=1e-10,
+                err_msg=f"P({t_mat}, {t_mat}) must equal 1")
+
+    def test_discount_factor_decreasing_in_maturity(self):
+        """For fixed t and r(t), P(t, T) must decrease as T increases (positive rates)."""
+        from risk_analytics.core.yield_curve import YieldCurve
+        tenors = [0.5, 1.0, 2.0, 5.0, 10.0]
+        rates = [0.030, 0.035, 0.040, 0.045, 0.048]
+        curve = YieldCurve(tenors, rates)
+        grid = np.linspace(0.0, 10.0, 100)
+
+        model = HullWhite1F(a=0.15, sigma=0.01, r0=0.030)
+        model.calibrate({"tenors": tenors, "zero_rates": rates, "time_grid": grid})
+
+        r_t = np.array([0.04])
+        t = 0.5
+        T_vals = [1.0, 2.0, 3.0, 5.0, 7.0, 10.0]
+        dfs = [model.discount_factor(t=t, T_mat=T, r_t=r_t).item() for T in T_vals]
+        for i in range(len(dfs) - 1):
+            assert dfs[i] > dfs[i + 1], (
+                f"P({t}, {T_vals[i]}) = {dfs[i]:.6f} should be > "
+                f"P({t}, {T_vals[i+1]}) = {dfs[i+1]:.6f}"
+            )
+
 
 # -----------------------------------------------------------------------
 # Geometric Brownian Motion

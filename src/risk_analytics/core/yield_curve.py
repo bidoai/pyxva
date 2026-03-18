@@ -102,6 +102,16 @@ class YieldCurve:
     # Public interface
     # ------------------------------------------------------------------
 
+    @property
+    def tenors(self) -> np.ndarray:
+        """Tenor knot points used to construct the curve (years)."""
+        return self._t
+
+    @property
+    def zero_rates(self) -> np.ndarray:
+        """Continuously-compounded zero rates at the tenor knots."""
+        return self._z
+
     def zero_rate(self, t: float | np.ndarray) -> float | np.ndarray:
         """Interpolated continuously-compounded zero rate.
 
