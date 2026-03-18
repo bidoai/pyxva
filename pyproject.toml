@@ -24,8 +24,8 @@ dependencies = [
 ]
 
 [project.urls]
-Repository = "https://github.com/robert/risk-analytics"
-Changelog = "https://github.com/robert/risk-analytics/blob/main/CHANGELOG.md"
+Repository = "https://github.com/bidoai/risk_analytics"
+Changelog = "https://github.com/bidoai/risk_analytics/blob/main/CHANGELOG.md"
 
 [project.scripts]
 risk-analytics-demo = "risk_analytics.demo:main"
