@@ -1,16 +1,49 @@
 # risk_analytics
 
-A Python library for Monte Carlo counterparty credit risk analytics. Simulates correlated
-stochastic paths for interest rates, equities, FX, and commodities; prices instruments on
-those paths; and computes bilateral exposure metrics (EE, PFE, EPE, EEPE, CVA/DVA) with
-ISDA CSA support covering VM, IM (Schedule and SIMM), and collateral.
+A Python library for Monte Carlo counterparty credit risk (CCR) and XVA analytics, with:
 
-**What this library provides:** correct implementations of the core analytics — simulation,
-pricing, margining, and XVA — structured around a YAML-driven `RiskEngine`.
+- **Correlated multi-asset simulation** — interest rates (HW1F, G2++), equity (GBM, Heston), FX (Garman-Kohlhagen), commodities (Schwartz 1F/2F)
+- **Path-dependent pricing** — barrier options, Asian options, IRS, bonds, European options
+- **Full ISDA CSA margining** — VM and IM (Schedule + SIMM), MPOR, collateral accounts
+- **Two exposure engines** — batch (`ISDAExposureCalculator`) and streaming (`StreamingExposureEngine`, O(n_paths) memory)
+- **YAML-driven `RiskEngine`** — end-to-end CVA/DVA/EE/PFE from a single config file
 
-**What you still need to build for a real deployment:** a market data connector (Bloomberg,
-Refinitiv, internal curves service), a trade loader (front-office system, OMS), governance
-controls (access management, approvals), audit logging, and operational monitoring.
+**What you still need for a real deployment:** a market data connector (Bloomberg, Refinitiv),
+a trade loader (OMS/front-office system), governance controls, audit logging, and operational monitoring.
+
+---
+
+## Quick Start
+
+```python
+from risk_analytics import RiskEngine
+
+result = RiskEngine.from_yaml("examples/single_swap.yaml").run()
+
+print(result.total_cva)
+print(result.summary_df())
+```
+
+Or from a dict config:
+
+```python
+from risk_analytics import RiskEngine
+
+result = RiskEngine({
+    "simulation": {"n_paths": 10000, "seed": 42, "time_grid": {"type": "standard"}},
+    "market_data": {"curves": {"USD_OIS": {"tenors": [1, 2, 5], "rates": [0.04, 0.044, 0.047]}}},
+    "models": [{"name": "rates", "type": "HullWhite1F", "params": {"a": 0.15, "sigma": 0.01, "r0": 0.04},
+                "calibrate_to": "USD_OIS"}],
+    "agreements": [{"id": "AGR_001", "counterparty": "Bank_A", "cp_hazard_rate": 0.01,
+                    "own_hazard_rate": 0.005, "csa": {"mta": 10000, "threshold": 0, "margin_regime": "REGVM"},
+                    "netting_sets": [{"id": "NS_1", "trades": [
+                        {"id": "swap_5y", "type": "InterestRateSwap", "model": "rates",
+                         "params": {"fixed_rate": 0.045, "maturity": 5.0, "notional": 1000000, "payer": True}}
+                    ]}]}],
+}).run()
+
+print(f"CVA: {result.total_cva:,.0f}")
+```
 
 ---
 
@@ -209,7 +242,30 @@ hw2 = HullWhite1F().load("hw.json")
 
 ---
 
-## Monte Carlo Engine
+## Two-Engine Architecture
+
+`risk_analytics` has two distinct engine layers that work in sequence:
+
+```
+MonteCarloEngine          →   SimulationResult (paths)
+                                      │
+                    ┌─────────────────┴──────────────────┐
+                    ▼                                     ▼
+      ISDAExposureCalculator                  StreamingExposureEngine
+      (batch — full MTM matrix)               (streaming — O(n_paths) memory)
+      Used by RiskEngine pipeline             Used standalone for large portfolios
+                    │                                     │
+                    └─────────────────┬──────────────────┘
+                                      ▼
+                            EE / PFE / ENE / CVA profiles
+```
+
+`MonteCarloEngine` generates correlated factor paths. The two exposure engines both
+consume those paths to produce EE/PFE/CVA — they differ only in memory strategy.
+**The pipeline (`RiskEngine`) always uses the batch engine.** Use `StreamingExposureEngine`
+directly when holding the full `(n_paths × T)` MTM matrix would be too large.
+
+### MonteCarloEngine (path generation)
 
 ```python
 from risk_analytics import MonteCarloEngine, SparseTimeGrid
@@ -479,11 +535,12 @@ the step loop from t=0 to accumulate state correctly.
 
 ---
 
-## Streaming Exposure (Memory-Efficient)
+## Streaming Exposure Engine (standalone, memory-efficient)
 
-`StreamingExposureEngine` computes EE / PFE / ENE / EE-MPOR by stepping through the time
-grid one step at a time, never holding the full `(n_paths, T)` MTM matrix in memory. It
-works with both plain `Pricer` and `StatefulPricer` instruments.
+Use `StreamingExposureEngine` directly — outside the `RiskEngine` pipeline — when memory
+is the binding constraint or when you want fine-grained control over the exposure loop.
+It steps through the time grid one step at a time, never holding the full `(n_paths, T)`
+MTM matrix. At 100k paths × 200 nodes × 5 models this saves ~4 GB vs the batch path.
 
 ```python
 from risk_analytics.exposure.streaming import StreamingExposureEngine
