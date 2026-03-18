@@ -4,12 +4,13 @@ A Python library for Monte Carlo counterparty credit risk (CCR) and XVA analytic
 
 - **Correlated multi-asset simulation** — interest rates (HW1F, G2++), equity (GBM, Heston), FX (Garman-Kohlhagen), commodities (Schwartz 1F/2F)
 - **Path-dependent pricing** — barrier options, Asian options, IRS, bonds, European options
+- **Explicit path-wise state modeling** — both pricing (`StatefulPricer`) and margining (`REGVMStepper`) carry per-path state, enabling correct handling of path-dependent instruments and CSA dynamics
 - **Full ISDA CSA margining** — VM and IM (Schedule + SIMM), MPOR, collateral accounts
 - **Two exposure engines** — batch (`ISDAExposureCalculator`) and streaming (`StreamingExposureEngine`, O(n_paths) memory)
 - **YAML-driven `RiskEngine`** — end-to-end CVA/DVA/EE/PFE from a single config file
 
-**What you still need for a real deployment:** a market data connector (Bloomberg, Refinitiv),
-a trade loader (OMS/front-office system), governance controls, audit logging, and operational monitoring.
+Not included (left to production systems): market data connectors (Bloomberg, Refinitiv),
+trade ingestion, governance controls, audit logging, and monitoring.
 
 ---
 
@@ -58,6 +59,27 @@ uv run python demo.py
 **Requirements:** Python 3.12+, `numpy`, `scipy`, `pandas`, `pyyaml`
 
 See [DESIGN.md](DESIGN.md) for the reasoning behind key architectural decisions.
+
+---
+
+## Design Philosophy
+
+- **Correctness over premature optimisation** — the default pipeline materialises paths and MTM matrices for clarity and debuggability; optimise only when needed
+- **Explicit state over hidden abstractions** — path-dependent pricing (`StatefulPricer`) and collateral dynamics (`REGVMStepper`) carry explicit per-path state rather than hiding it in object mutation
+- **Separation of concerns** — simulation, pricing, margining, and exposure are cleanly decoupled; each layer can be used independently
+- **Scalability as an extension, not a constraint** — the streaming engine handles large-scale workloads, but is not required for typical use cases (1k–10k paths)
+
+---
+
+## Scope
+
+This library focuses on Monte Carlo exposure and XVA analytics. It is not:
+
+- a low-latency pricing system
+- real-time risk infrastructure
+- an enterprise data integration framework
+
+It is designed to demonstrate correct modelling, clean architecture, and extensibility.
 
 ---
 
@@ -260,10 +282,10 @@ MonteCarloEngine          →   SimulationResult (paths)
                             EE / PFE / ENE / CVA profiles
 ```
 
-`MonteCarloEngine` generates correlated factor paths. The two exposure engines both
-consume those paths to produce EE/PFE/CVA — they differ only in memory strategy.
-**The pipeline (`RiskEngine`) always uses the batch engine.** Use `StreamingExposureEngine`
-directly when holding the full `(n_paths × T)` MTM matrix would be too large.
+`MonteCarloEngine` generates correlated factor paths. Both exposure engines consume those
+paths — they differ only in memory strategy. The pipeline always uses the batch engine;
+see the [Streaming Exposure Engine](#streaming-exposure-engine) section for when to use
+the other.
 
 ### MonteCarloEngine (path generation)
 
@@ -488,8 +510,9 @@ class LookbackCall(StatefulPricer):
 
 `BarrierOption` is a ready-made `StatefulPricer` for European down-and-out / up-and-out
 options. The barrier is monitored at each simulation step. For `t < expiry`, `step()`
-returns the analytical Black-Scholes barrier price (smooth EE/PFE pre-expiry). At expiry,
-it returns the payoff if the barrier was never breached, otherwise zero.
+uses the closed-form Black-Scholes barrier formula for pre-expiry MTM (exact under GBM;
+see DESIGN.md §16), giving smooth EE/PFE profiles. At expiry, it returns the payoff if
+the barrier was never breached, otherwise zero.
 
 ```python
 from risk_analytics.pricing.exotic import BarrierOption
@@ -535,12 +558,13 @@ the step loop from t=0 to accumulate state correctly.
 
 ---
 
-## Streaming Exposure Engine (standalone, memory-efficient)
+## Streaming Exposure Engine
 
 Use `StreamingExposureEngine` directly — outside the `RiskEngine` pipeline — when memory
 is the binding constraint or when you want fine-grained control over the exposure loop.
 It steps through the time grid one step at a time, never holding the full `(n_paths, T)`
-MTM matrix. At 100k paths × 200 nodes × 5 models this saves ~4 GB vs the batch path.
+MTM matrix. For large simulations (e.g. 100k+ paths), this can reduce memory usage by
+several GB compared to the batch approach.
 
 ```python
 from risk_analytics.exposure.streaming import StreamingExposureEngine
