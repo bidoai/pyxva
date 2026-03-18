@@ -244,10 +244,10 @@ class TradeFactory:
 
         if t == "InterestRateSwap":
             from pyxva.pricing.rates.swap import InterestRateSwap
-            # frequency is the year fraction between payments (e.g. 0.5 = semi-annual)
+            # payment_period_years is the year fraction between payments (e.g. 0.5 = semi-annual)
             # InterestRateSwap takes payment_freq = payments per year (int)
-            frequency = p.get("frequency", 0.5)
-            payment_freq = max(1, int(round(1.0 / frequency)))
+            payment_period_years = p.get("payment_period_years", p.get("frequency", 0.5))
+            payment_freq = max(1, int(round(1.0 / payment_period_years)))
             return InterestRateSwap(
                 fixed_rate=p["fixed_rate"],
                 maturity=p["maturity"],
@@ -267,7 +267,7 @@ class TradeFactory:
                 face_value=p.get("face_value", 1_000_000),
                 coupon_rate=p["coupon_rate"],
                 maturity=p["maturity"],
-                coupon_freq=max(1, int(round(1.0 / p.get("frequency", 0.5)))),
+                coupon_freq=max(1, int(round(1.0 / p.get("payment_period_years", p.get("frequency", 0.5))))),
             )
         elif t == "EuropeanOption":
             from pyxva.pricing.equity.vanilla_option import EuropeanOption

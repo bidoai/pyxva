@@ -103,6 +103,43 @@ class TestREGVMStepper:
         stepper.reset()
         np.testing.assert_allclose(stepper.csb, 0.0, atol=1e-10)
 
+    def test_rounding_delivery_ceil_return_floor(self):
+        """ISDA 2016 VM CSA: delivery rounds UP (ceil), return rounds DOWN (floor).
+
+        Regression test for the rounding direction fix. With rounding_nearest=1000:
+        - A delivery shortfall of 1500 should round UP  to 2000, not nearest (2000 is same here).
+        - A delivery shortfall of 1100 should round UP  to 2000, not nearest (1000).
+        - A return  excess   of 1900 should round DOWN to 1000, not nearest (2000).
+        """
+        csa = CSATerms(
+            counterparty_id="CP",
+            threshold_party=0.0,
+            threshold_counterparty=0.0,
+            mta_party=0.0,
+            mta_counterparty=0.0,
+            rounding_nearest=1000.0,
+        )
+        # --- delivery rounds UP ---
+        stepper = REGVMStepper(csa, n_paths=1)
+        # shortfall = 1100 → ceil(1100/1000)*1000 = 2000, NOT round(1100/1000)*1000 = 1000
+        stepper.step(np.array([1100.0]))
+        assert stepper.csb[0] == pytest.approx(2000.0, abs=1e-10), (
+            "delivery should round UP: 1100 → 2000 (ceil), not 1000 (nearest)"
+        )
+
+        # --- return rounds DOWN ---
+        stepper2 = REGVMStepper(csa, n_paths=1)
+        # Seed the CSB at 3000 first (simulate prior delivery)
+        stepper2.step(np.array([3000.0]))
+        assert stepper2.csb[0] == pytest.approx(3000.0, abs=1e-10)
+        # Now MTM drops to 1100: return excess = 3000 - 1100 = 1900
+        # floor(1900/1000)*1000 = 1000, NOT round = 2000
+        stepper2.step(np.array([1100.0]))
+        # After return of 1000: CSB = 3000 - 1000 = 2000
+        assert stepper2.csb[0] == pytest.approx(2000.0, abs=1e-10), (
+            "return should round DOWN: excess 1900 → return 1000 (floor), not 2000 (nearest)"
+        )
+
 
 # ---------------------------------------------------------------------------
 # StreamingExposureEngine

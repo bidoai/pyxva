@@ -208,7 +208,7 @@ class _AggregateNettingSet:
         self.name = id_   # ISDAExposureCalculator uses .name
         self.id = id_
         self._mtm = mtm
-        self.trades = {}
+        self.trades = []
 
     def net_mtm(self, simulation_results=None) -> np.ndarray:
         return self._mtm
@@ -221,9 +221,7 @@ def _run_parallel(agreements, simulation_results, time_grid, confidence, write_r
     via OS shared memory, avoiding O(workers × data) memory duplication from pickling.
     """
     from pyxva.pipeline.shared_memory import SimulationSharedMemory
-    from uuid import uuid4
 
-    shm_name = f"ra_{os.getpid()}_{uuid4().hex[:8]}"
     max_workers = min(len(agreements), os.cpu_count() or 1)
     agr_results = {}
 

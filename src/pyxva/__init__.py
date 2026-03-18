@@ -4,7 +4,7 @@ from .backtest import BacktestEngine, BacktestResult
 from .core import MonteCarloEngine, Pricer, SimulationResult, StochasticModel, TimeGrid, YieldCurve, Interpolation
 from .core.market_data import MarketData, BumpType, ScenarioBump
 from .core.grid import SparseTimeGrid
-from .models import GeometricBrownianMotion, HestonModel, HullWhite1F, Schwartz1F, Schwartz2F
+from .models import GeometricBrownianMotion, GarmanKohlhagen, HestonModel, HullWhite1F, HullWhite2F, Schwartz1F, Schwartz2F
 from .pricing import EuropeanOption, FixedRateBond, InterestRateSwap, ZeroCouponBond
 from .exposure import (
     ExposureCalculator,
@@ -44,7 +44,9 @@ __all__ = [
     "SparseTimeGrid",
     # Models
     "HullWhite1F",
+    "HullWhite2F",
     "GeometricBrownianMotion",
+    "GarmanKohlhagen",
     "HestonModel",
     "Schwartz1F",
     "Schwartz2F",

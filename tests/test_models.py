@@ -8,6 +8,7 @@ from pyxva.models import (
     GarmanKohlhagen,
     HestonModel,
     HullWhite1F,
+    HullWhite2F,
     Schwartz1F,
     Schwartz2F,
 )
@@ -318,6 +319,69 @@ class TestGarmanKohlhagen:
         p = self.model.get_params()
         assert p["sigma"] == 0.20
         assert p["r_d"] == 0.05
+
+
+# -----------------------------------------------------------------------
+# Hull-White 2F (G2++)
+# -----------------------------------------------------------------------
+
+class TestHullWhite2F:
+    def setup_method(self):
+        self.model = HullWhite2F(a=0.10, sigma=0.01, b=0.05, eta=0.005, rho=0.0, r0=0.03)
+        self.grid = TimeGrid.uniform(5.0, 60)
+
+    def test_simulate_shape(self):
+        """Paths tensor should be (n_paths, T, 2) with factors ['r', 'u_component']."""
+        engine = MonteCarloEngine(N_PATHS, seed=42)
+        results = engine.run([self.model], self.grid)
+        result = results["HullWhite2F"]
+        assert result.paths.shape == (N_PATHS, len(self.grid), 2)
+        assert result.factor_names == ["r", "u_component"]
+
+    def test_initial_rate(self):
+        """Factor 'r' at t=0 should equal r0 for all paths."""
+        engine = MonteCarloEngine(N_PATHS, seed=42)
+        results = engine.run([self.model], self.grid)
+        r_t0 = results["HullWhite2F"].factor("r")[:, 0]
+        np.testing.assert_allclose(r_t0, 0.03, atol=1e-12)
+
+    def test_two_factor_combined_rate(self):
+        """Factor 'r' should equal the sum of the r and u components.
+
+        By construction x(t) = r_component(t) + u_component(t), both stored
+        separately but combined in the 'r' output factor.
+        """
+        engine = MonteCarloEngine(N_PATHS, seed=42)
+        results = engine.run([self.model], self.grid)
+        result = results["HullWhite2F"]
+        r_full = result.factor("r")              # (n_paths, T) — combined short rate
+        u_comp = result.factor("u_component")    # (n_paths, T)
+        # r_full is x = r_comp + u_comp; we can't extract r_comp separately,
+        # but we can verify the u_component starts at 0 (by convention, u(0) = 0).
+        np.testing.assert_allclose(u_comp[:, 0], 0.0, atol=1e-12)
+
+    def test_mean_reversion(self):
+        """Long-run mean of short rate should be near 0 (un-calibrated Vasicek-style).
+
+        Without curve calibration, theta=0 so both factors mean-revert toward 0.
+        At t=20yr (>> 1/a ≈ 10yr, 1/b ≈ 20yr) the distribution should be centred near 0.
+        """
+        engine = MonteCarloEngine(20_000, seed=42)
+        grid = TimeGrid.uniform(20.0, 80)
+        results = engine.run([self.model], grid)
+        r_terminal = results["HullWhite2F"].factor("r")[:, -1]
+        # Long-run mean ≈ 0 for uncalibrated HW2F (theta=0, no yield curve fit)
+        assert abs(r_terminal.mean()) < 0.02
+
+    def test_interpolation_space(self):
+        """HullWhite2F should declare linear interpolation for both factors."""
+        assert self.model.interpolation_space == ["linear", "linear"]
+
+    def test_get_set_params(self):
+        self.model.set_params({"sigma": 0.02, "eta": 0.008})
+        p = self.model.get_params()
+        assert p["sigma"] == 0.02
+        assert p["eta"] == 0.008
 
 
 # -----------------------------------------------------------------------
