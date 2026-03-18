@@ -23,17 +23,42 @@ class NettingSet:
         self.name = name
         self._trades: list[tuple[str, Pricer]] = []
 
-    def add_trade(self, trade_id: str, pricer: Pricer) -> None:
+    @property
+    def id(self) -> str:
+        """Alias for name — used by Agreement for dict keying."""
+        return self.name
+
+    def add_trade(self, trade_id_or_trade, pricer: Pricer = None) -> None:
         """Add a trade to the netting set.
+
+        Accepts two calling conventions:
+
+        1. Legacy: ``add_trade(trade_id: str, pricer: Pricer)``
+        2. New:    ``add_trade(trade: Trade)``  (Trade object, no second arg)
+
+        In both cases the trade is stored as a ``(trade_id, pricer)`` tuple
+        so that ``net_mtm()`` continues to work unchanged.
 
         Parameters
         ----------
-        trade_id : str
-            Unique identifier for the trade.
-        pricer : Pricer
-            Pricing model for the trade.
+        trade_id_or_trade : str or Trade
+            Either a string trade ID (legacy) or a Trade object.
+        pricer : Pricer, optional
+            Pricing model for the trade. Required when first arg is a str.
         """
-        self._trades.append((trade_id, pricer))
+        # Import here to avoid circular imports at module level
+        from risk_analytics.portfolio.trade import Trade as _Trade
+
+        if isinstance(trade_id_or_trade, _Trade):
+            trade = trade_id_or_trade
+            self._trades.append((trade.id, trade.pricer))
+        else:
+            # Legacy: (str, Pricer)
+            if pricer is None:
+                raise ValueError(
+                    "pricer must be provided when trade_id_or_trade is a string."
+                )
+            self._trades.append((trade_id_or_trade, pricer))
 
     def net_mtm(self, simulation_results: dict[str, SimulationResult]) -> np.ndarray:
         """Compute the net MTM across all trades in the netting set.
