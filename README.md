@@ -18,7 +18,7 @@ controls (access management, approvals), audit logging, and operational monitori
 
 ```bash
 uv sync          # installs all dependencies
-uv run pytest    # 391 tests
+uv run pytest    # 405 tests
 uv run python demo.py
 ```
 
@@ -46,6 +46,7 @@ risk_analytics/
 │   └── schedule.py      # Schedule (payment dates, day-count fractions)
 ├── models/
 │   ├── rates/hull_white.py        # HullWhite1F — exact Gaussian discretisation
+│   ├── rates/hull_white2f.py      # HullWhite2F (G2++) — two-factor short rate
 │   ├── equity/gbm.py              # GeometricBrownianMotion — exact log-normal
 │   ├── equity/heston.py           # HestonModel — Euler + full truncation
 │   ├── commodity/schwartz1f.py    # Schwartz1F — exact OU
@@ -55,7 +56,8 @@ risk_analytics/
 │   ├── rates/swap.py              # InterestRateSwap (uniform or Schedule)
 │   ├── rates/bond.py              # ZeroCouponBond, FixedRateBond
 │   ├── equity/vanilla_option.py   # EuropeanOption — vectorised Black-Scholes
-│   └── exotic/barrier_option.py   # BarrierOption — down/up-and-out (StatefulPricer)
+│   ├── exotic/barrier_option.py   # BarrierOption — down/up-and-out (StatefulPricer)
+│   └── exotic/asian_option.py     # AsianOption — arithmetic average (StatefulPricer)
 ├── portfolio/
 │   ├── trade.py                   # Trade — binds Pricer to a named model
 │   └── agreement.py               # Agreement — ISDA MA scope; aggregate VM, CVA
@@ -63,6 +65,7 @@ risk_analytics/
 │   ├── metrics.py                 # ExposureCalculator: EE, PFE, PSE, EPE
 │   ├── netting.py                 # NettingSet
 │   ├── bilateral.py               # BilateralExposureCalculator, ISDAExposureCalculator
+│   ├── saccr.py                   # SACCRCalculator — Basel III SA-CCR EAD formula
 │   ├── margin/vm.py               # REGVMEngine — path-dependent MTA-gated CSB
 │   ├── margin/im.py               # REGIMEngine — Schedule IM
 │   ├── margin/simm.py             # SimmCalculator — ISDA SIMM IR/Equity delta
@@ -76,6 +79,10 @@ risk_analytics/
 │   ├── engine.py                  # RiskEngine — 3-phase pipeline + parallel execution
 │   ├── result.py                  # RunResult, AgreementResult, NettingSetSummary
 │   └── shared_memory.py           # SimulationSharedMemory — zero-copy paths via SharedMemory
+├── examples/
+│   ├── single_swap.yaml           # Single IRS with HullWhite1F
+│   ├── multi_asset.yaml           # IRS + European equity option, correlated models
+│   └── stress_test.yaml           # Three agreements (triggers parallel execution path)
 └── backtest/
     ├── engine.py                  # BacktestEngine — PFE exceedances, Kupiec, bias t-test
     └── result.py                  # BacktestResult
@@ -163,6 +170,7 @@ for Gaussian quantities (rates, log-spot processes):
 | Model | Factor(s) | Space |
 |---|---|---|
 | `HullWhite1F` | `r` | `["linear"]` |
+| `HullWhite2F` | `r`, `u_component` | `["linear", "linear"]` |
 | `GBM`, `GarmanKohlhagen` | `S` | `["log"]` |
 | `HestonModel` | `S`, `v` | `["log", "linear"]` |
 | `Schwartz1F` | `X` (log-spot) | `["linear"]` |
@@ -185,6 +193,7 @@ All models implement `StochasticModel` with `simulate()`, `calibrate()`, `get_pa
 | Model | Asset class | SDE |
 |---|---|---|
 | `HullWhite1F` | Interest rates | `dr = (θ(t) − a·r) dt + σ dW` — exact Gaussian |
+| `HullWhite2F` | Interest rates (2F) | `dr = (θ(t)−ar) dt + σ dW₁`, `du = −bu dt + η dW₂` — G2++ |
 | `GeometricBrownianMotion` | Equity | `dS = μS dt + σS dW` — exact log-normal |
 | `HestonModel` | Equity (stoch vol) | `dS`, `dv` joint — Euler + full truncation |
 | `Schwartz1F` | Commodity | `dX = κ(μ − X) dt + σ dW` — exact OU |
@@ -381,7 +390,8 @@ result.to_parquet("./results/")   # summary.parquet, ee_profiles.parquet, pfe_pr
 | `pse` / `epe` / `eepe` | Exposure scalars |
 
 Supported trade types in YAML: `InterestRateSwap`, `ZeroCouponBond`, `FixedRateBond`,
-`EuropeanOption`. Register custom types with the `@TradeFactory.register` decorator (see below).
+`EuropeanOption`, `BarrierOption`, `AsianOption` (auto-registered). Register additional
+custom types with the `@TradeFactory.register` decorator (see below).
 
 ---
 
@@ -421,7 +431,9 @@ class LookbackCall(StatefulPricer):
 ### BarrierOption
 
 `BarrierOption` is a ready-made `StatefulPricer` for European down-and-out / up-and-out
-options. The barrier is monitored at each simulation step.
+options. The barrier is monitored at each simulation step. For `t < expiry`, `step()`
+returns the analytical Black-Scholes barrier price (smooth EE/PFE pre-expiry). At expiry,
+it returns the payoff if the barrier was never breached, otherwise zero.
 
 ```python
 from risk_analytics.pricing.exotic import BarrierOption
@@ -434,6 +446,25 @@ opt = BarrierOption(
     factor_name="S",
     option_type="call",        # or "put"
     risk_free_rate=0.04,
+    sigma=0.20,                # vol for analytical pre-expiry MTM
+)
+mtm = opt.price(simulation_result)   # (n_paths, T)
+```
+
+### AsianOption
+
+`AsianOption` is a `StatefulPricer` for arithmetic-average Asian options. State is
+the running sum and count of spot observations; payoff at expiry is
+`max(avg(S) − K, 0)`.
+
+```python
+from risk_analytics.pricing.exotic import AsianOption
+
+opt = AsianOption(
+    strike=100.0,
+    expiry=1.0,
+    risk_free_rate=0.04,
+    factor_name="S",
 )
 mtm = opt.price(simulation_result)   # (n_paths, T)
 ```
@@ -486,26 +517,32 @@ for t_idx, net_mtm_t in enumerate(net_mtm_steps):   # (n_paths,) slices
 
 ## Custom Instrument Types
 
-Register new trade types for use in YAML configs with the `@TradeFactory.register`
-decorator:
+`BarrierOption` and `AsianOption` are **auto-registered** on import — no decorator call
+required. Use them directly in YAML configs:
+
+```yaml
+- id: barrier_1
+  type: BarrierOption
+  model: equity_spx
+  params: {strike: 100.0, barrier: 80.0, expiry: 1.0, risk_free_rate: 0.04}
+
+- id: asian_1
+  type: AsianOption
+  model: equity_spx
+  params: {strike: 100.0, expiry: 1.0, risk_free_rate: 0.04}
+```
+
+Register additional trade types with the `@TradeFactory.register` decorator:
 
 ```python
 from risk_analytics.pipeline.config import TradeFactory
-from risk_analytics.pricing.exotic import BarrierOption
 
-@TradeFactory.register("BarrierOption")
-def _build_barrier(params):
-    return BarrierOption(
-        strike=params["strike"],
-        barrier=params["barrier"],
-        expiry=params["expiry"],
-        barrier_type=params.get("barrier_type", "down-out"),
-        option_type=params.get("option_type", "call"),
-        risk_free_rate=params.get("risk_free_rate", 0.04),
-    )
+@TradeFactory.register("LookbackCall")
+def _build_lookback(params):
+    return LookbackCall(expiry=params["expiry"])
 ```
 
-Then use `type: BarrierOption` in the YAML `trades` list as normal.
+Then use `type: LookbackCall` in the YAML `trades` list as normal.
 
 ---
 
@@ -563,6 +600,62 @@ stressed = result.stress_test(
     market_data=base_market_data,
 )
 ```
+
+---
+
+## SA-CCR (Regulatory Capital)
+
+`SACCRCalculator` computes the Basel III Standardised Approach for Counterparty Credit
+Risk EAD formula: **EAD = 1.4 × (RC + PFE add-on)**.
+
+```python
+from risk_analytics.exposure.saccr import SACCRCalculator, SACCRTrade
+
+calc = SACCRCalculator()
+calc.add_trade(SACCRTrade(
+    trade_id="swap_5y",
+    asset_class="ir",         # "ir", "equity_single", "equity_index", "fx", ...
+    notional=10_000_000,
+    maturity=5.0,
+    current_mtm=50_000,
+    delta=1.0,                # +1 receiver / -1 payer; BS delta for options
+))
+calc.add_trade(SACCRTrade("opt_2y", "equity_single", 500_000, 2.0, -10_000, 0.6))
+
+print(f"RC:        {calc.replacement_cost():,.0f}")
+print(f"PFE addon: {calc.pfe_addon():,.0f}")
+print(f"EAD:       {calc.ead():,.0f}")
+```
+
+Build directly from pipeline `Trade` objects:
+
+```python
+calc = SACCRCalculator.from_trades(netting_set.trades, current_mtm={"swap_5y": 50_000})
+ead = calc.ead()
+```
+
+IR supervisory factors (Basel III CRE52): < 1Y: 0.20% / 1–5Y: 0.50% / 5–10Y: 1.00% / > 10Y: 1.50%.
+Equity single-name: 32% / Equity index: 20% / FX: 4%.
+
+---
+
+## Example Configs
+
+Ready-to-run YAML configs live in `examples/`. Run with:
+
+```bash
+uv run python -c "
+from risk_analytics import RiskEngine
+result = RiskEngine.from_yaml('examples/single_swap.yaml').run()
+print(result.summary_df())
+"
+```
+
+| File | Description |
+|---|---|
+| `examples/single_swap.yaml` | Single 5-year payer IRS, HullWhite1F calibrated to USD OIS, 10k paths |
+| `examples/multi_asset.yaml` | IRS + European equity call, correlated HW1F + GBM, 10k paths |
+| `examples/stress_test.yaml` | Three agreements triggering the parallel execution path, 50k paths |
 
 ---
 

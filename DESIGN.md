@@ -184,19 +184,23 @@ base vs stressed results: you hold both objects simultaneously without any bookk
 
 ---
 
-## 11. TradeFactory.register(): class-level registry
+## 11. TradeFactory.register(): class-level registry with auto-registration for built-ins
 
 **Choice:** `@TradeFactory.register("TypeName")` stores a `(params) -> Pricer` builder
 function in a `dict` on the class.  It is checked before the built-in if/elif chain.
+`BarrierOption` and `AsianOption` are auto-registered at module import time via
+`_register_builtin_trades()`, which is idempotent (guards against double-registration).
 
 **Why:** The built-in chain handles the four canonical vanilla types.  A registry
 decorator lets users add any instrument without modifying library code or subclassing
 `TradeFactory`.  The custom type is then usable in YAML configs the same way as built-in
-types — no special syntax.
+types — no special syntax.  Auto-registering the built-in exotics eliminates a sharp edge:
+previously users had to call `@TradeFactory.register("BarrierOption")` manually before
+using the type in YAML, which was surprising and not documented at the call site.
 
 The registry is a class-level `dict` rather than a module-level variable so that it
 travels with `TradeFactory` when the class is imported across module boundaries, and so
-that tests can `clear()` it in `setup_method` without affecting other tests.
+that tests can inspect it without affecting other tests.
 
 ---
 
@@ -231,3 +235,54 @@ different currencies (e.g. `"rates_usd"` and `"rates_eur"`, both `HullWhite1F`).
 name, only the last model of each type survives.  Using the user-defined config name as
 the key allows arbitrarily many models of the same type.  Trade configs reference models
 by this same user-defined name (`model: rates_usd`), closing the loop.
+
+---
+
+## 14. HullWhite2F (G2++): combined short rate as a single "r" factor
+
+**Choice:** `HullWhite2F` outputs two factors: `"r"` = the full combined short rate
+`x(t) = r_component(t) + u_component(t)`, and `"u_component"` = the second factor alone.
+The `discount_factor()` method accepts `x_t` (the combined rate) and uses the HW1F
+B₁ approximation; a separate `discount_factor_2f(t, T, r_t, u_t)` exposes the full
+two-factor affine formula.
+
+**Why:** All existing rate pricers (IRS, ZCB, FixedRateBond) read a single `"r"` factor
+and call `model.discount_factor(t, T, r_t)`.  If `HullWhite2F` exposed `"r"` and `"u"`
+as two separate Gaussian processes, every rate pricer would need updating to sum them
+before discounting.  Emitting the *combined* short rate as `"r"` means existing pricers
+work unchanged and the two-factor model is a drop-in replacement for `HullWhite1F`
+with richer term-structure dynamics.  The `"u_component"` factor is available for
+analytics that need the individual components (e.g. correlation attribution, 2F affine
+discount).
+
+---
+
+## 15. SA-CCR as a standalone calculator in `exposure/`
+
+**Choice:** `SACCRCalculator` lives in `exposure/saccr.py` and is not wired into the
+`RiskEngine` pipeline or `RunResult`.  Users call it explicitly after a run.
+
+**Why:** SA-CCR EAD is a *regulatory capital* metric, not a risk-management metric.
+It uses trade notionals and asset-class supervisory factors — it does not consume
+simulated paths.  Embedding it in the pipeline would force every run to carry
+notional/asset-class metadata that most users never need.  As a standalone calculator it
+is easy to unit-test, easy to audit against Basel III CRE52, and usable independently of
+the simulation pipeline.  `SACCRCalculator.from_trades()` provides the bridge when users
+want to call it on a live netting set from a pipeline run.
+
+---
+
+## 16. BarrierOption pre-expiry analytical MTM
+
+**Choice:** `BarrierOption.step()` returns the analytical Black-Scholes barrier option
+price for `t < expiry` rather than zero.  The reflection-principle formula for down-and-
+out / up-and-out call/put options is evaluated at each simulation step using the current
+spot factor value.
+
+**Why:** Returning zero pre-expiry makes the EE/PFE profile flat at zero until expiry,
+then jumps to the terminal payoff distribution.  This is technically correct for the
+*barrier monitoring* payoff but produces a misleading exposure profile: a one-year barrier
+call has non-trivial credit risk throughout its life, not just at expiry.  The analytical
+MTM — the fair value of the surviving (unbreached) option at time t — gives a smooth,
+economically meaningful exposure profile usable for CVA, collateral, and credit limit
+monitoring.  The formula is O(1) per path per step and adds negligible runtime cost.
