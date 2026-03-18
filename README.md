@@ -1,6 +1,6 @@
 # risk_analytics
 
-A Python library for production style Monte Carlo counterparty credit risk analytics. Simulates
+A Python library for Monte Carlo counterparty credit risk analytics. Simulates
 correlated stochastic paths for interest rates, equities, FX, and commodities on a
 memory-efficient sparse grid; prices instruments on those paths; computes bilateral exposure
 metrics (EE, PFE, EPE, EEPE, CVA/DVA) with full ISDA CSA support including VM, IM (Schedule
