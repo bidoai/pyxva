@@ -105,7 +105,7 @@ Items are grouped by area; priority labels: `[P1]` urgent / `[P2]` important / `
 
 ## Models
 
-- [ ] **[P2] Verify `HestonModel.interpolation_space` returns `["log", "linear"]`.**
+- [x] **[P2] Verify `HestonModel.interpolation_space` returns `["log", "linear"]`.**
   The variance factor `v` should be interpolated in linear space (it is mean-reverting
   and can approach zero), while the spot `S` should be log-space.  Confirm this is
   correctly declared and tested.

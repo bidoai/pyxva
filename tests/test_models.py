@@ -198,6 +198,15 @@ class TestHeston:
         results = engine.run([self.model], self.grid)
         assert results["Heston"].factor_names == ["S", "v"]
 
+    def test_interpolation_space(self):
+        """Heston must declare log-space for S and linear-space for v.
+
+        S is log-normally distributed: log interpolation prevents Jensen bias.
+        v (variance) is mean-reverting and can approach 0: linear is correct.
+        See DESIGN.md §2.
+        """
+        assert self.model.interpolation_space == ["log", "linear"]
+
 
 # -----------------------------------------------------------------------
 # Schwartz 1F
