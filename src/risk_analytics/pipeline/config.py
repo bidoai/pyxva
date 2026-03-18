@@ -184,10 +184,47 @@ class EngineConfig:
 
 
 class TradeFactory:
+    """Builds Pricer instances from TradeConfig dicts.
+
+    Built-in types: InterestRateSwap, ZeroCouponBond, FixedRateBond, EuropeanOption.
+
+    Register custom instrument types with the ``register`` decorator::
+
+        @TradeFactory.register("MyOption")
+        def _build_my_option(params):
+            return MyOption(strike=params["strike"], ...)
+
+    The registered function receives the raw ``params`` dict from the
+    trade config and must return a ``Pricer`` instance.
     """
-    Builds Pricer instances from TradeConfig dicts.
-    Extend _REGISTRY to support additional instrument types.
-    """
+
+    _CUSTOM_REGISTRY: dict = {}
+
+    @classmethod
+    def register(cls, type_name: str):
+        """Decorator to register a custom pricer builder.
+
+        Parameters
+        ----------
+        type_name : str
+            The ``type`` string used in YAML/dict trade configs.
+
+        Example
+        -------
+        ::
+
+            @TradeFactory.register("BarrierOption")
+            def _build_barrier(params):
+                return BarrierOption(
+                    strike=params["strike"],
+                    barrier=params["barrier"],
+                    expiry=params["expiry"],
+                )
+        """
+        def decorator(fn):
+            cls._CUSTOM_REGISTRY[type_name] = fn
+            return fn
+        return decorator
 
     @staticmethod
     def build(trade_cfg: TradeConfig):
@@ -200,6 +237,10 @@ class TradeFactory:
     def _build_pricer(cfg: TradeConfig):
         t = cfg.type
         p = cfg.params
+
+        # Check custom registry first
+        if t in TradeFactory._CUSTOM_REGISTRY:
+            return TradeFactory._CUSTOM_REGISTRY[t](p)
 
         if t == "InterestRateSwap":
             from risk_analytics.pricing.rates.swap import InterestRateSwap
@@ -238,7 +279,12 @@ class TradeFactory:
                 option_type=p.get("option_type", "call"),
             )
         else:
+            known = ", ".join(
+                ["InterestRateSwap", "ZeroCouponBond", "FixedRateBond", "EuropeanOption"]
+                + list(TradeFactory._CUSTOM_REGISTRY)
+            )
             raise ValueError(
                 f"Unknown trade type '{t}'. "
-                f"Supported: InterestRateSwap, ZeroCouponBond, FixedRateBond, EuropeanOption."
+                f"Built-in and registered types: {known}. "
+                f"Use @TradeFactory.register('{t}') to add custom types."
             )
