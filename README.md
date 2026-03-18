@@ -10,8 +10,9 @@ and exposure under realistic ISDA CSA dynamics.
 - **Path-dependent pricing** — barrier options, Asian options, IRS, bonds, European options
 - **Explicit path-wise state modeling** — both pricing (`StatefulPricer`) and margining (`REGVMStepper`) carry per-path state, enabling correct handling of path-dependent instruments and CSA dynamics
 - **Full ISDA CSA margining** — VM and IM (Schedule + SIMM), MPOR, collateral accounts
+- **Complete xVA suite** — CVA, DVA, FVA, MVA, KVA with term-structure hazard curves and per-bucket attribution
 - **Two exposure engines** — batch (`ISDAExposureCalculator`) and streaming (`StreamingExposureEngine`, O(n_paths) memory)
-- **YAML-driven `RiskEngine`** — end-to-end CVA/DVA/EE/PFE from a single config file
+- **YAML-driven `RiskEngine`** — end-to-end CVA/DVA/FVA/MVA/KVA/EE/PFE from a single config file
 
 Not included (left to production systems): market data connectors (Bloomberg, Refinitiv),
 trade ingestion, governance controls, audit logging, and monitoring.
@@ -72,7 +73,7 @@ uv add pyxva
 git clone https://github.com/bidoai/pyxva
 cd pyxva
 uv sync
-uv run pytest    # 405 tests
+uv run pytest    # 467 tests
 ```
 
 See [DESIGN.md](DESIGN.md) for the reasoning behind key architectural decisions.
@@ -137,9 +138,11 @@ pyxva/
 │   ├── metrics.py                 # ExposureCalculator: EE, PFE, PSE, EPE
 │   ├── netting.py                 # NettingSet
 │   ├── bilateral.py               # BilateralExposureCalculator, ISDAExposureCalculator
+│   │                              #   cva/dva/fva/mva/kva_approx, xva_attribution
+│   ├── hazard_curve.py            # HazardCurve — term-structure; calibrate() from CDS
 │   ├── saccr.py                   # SACCRCalculator — Basel III SA-CCR EAD formula
 │   ├── margin/vm.py               # REGVMEngine — path-dependent MTA-gated CSB
-│   ├── margin/im.py               # REGIMEngine — Schedule IM
+│   ├── margin/im.py               # REGIMEngine — Schedule IM + im_time_profile()
 │   ├── margin/simm.py             # SimmCalculator — ISDA SIMM IR/Equity delta
 │   ├── collateral.py              # CollateralAccount + HaircutSchedule
 │   ├── csa.py                     # CSATerms (threshold, MTA, MPOR, IM model)
@@ -149,7 +152,7 @@ pyxva/
 ├── pipeline/
 │   ├── config.py                  # EngineConfig — YAML/dict parser + TradeFactory.register()
 │   ├── engine.py                  # RiskEngine — 3-phase pipeline + parallel execution
-│   ├── result.py                  # RunResult, AgreementResult, NettingSetSummary
+│   ├── result.py                  # RunResult (from_parquet), AgreementResult (xva_summary), NettingSetSummary
 │   └── shared_memory.py           # SimulationSharedMemory — zero-copy paths via SharedMemory
 ├── examples/
 │   ├── single_swap.yaml           # Single IRS with HullWhite1F
@@ -420,6 +423,8 @@ agreements:
     counterparty: Goldman_Sachs
     cp_hazard_rate: 0.010
     own_hazard_rate: 0.005
+    funding_spread: 0.005        # optional: enables FVA + MVA computation
+    cost_of_capital: 0.10        # optional: enables KVA (default 10%)
     csa:
       mta: 10000
       threshold: 0
@@ -469,9 +474,13 @@ result = engine.run(market_data=live_market_data)
 ```python
 result.agreement_results          # dict[agreement_id → AgreementResult]
 result.total_cva                  # sum of CVA across all agreements
+result.total_fva                  # sum of FVA across all agreements (v1.1)
+result.total_mva                  # sum of MVA across all agreements (v1.1)
+result.total_kva                  # sum of KVA across all agreements (v1.1)
 result.summary_df()               # pd.DataFrame — one row per agreement
 result.to_dict()                  # plain dict for serialisation
 result.to_parquet("./results/")   # summary.parquet, ee_profiles.parquet, pfe_profiles.parquet
+RunResult.from_parquet("./results/")   # reload a persisted run (v1.1)
 ```
 
 `AgreementResult` fields:
@@ -481,8 +490,17 @@ result.to_parquet("./results/")   # summary.parquet, ee_profiles.parquet, pfe_pr
 | `ee_profile` / `pfe_profile` / `ene_profile` | Post-collateral profiles `(T,)` |
 | `ee_mpor_profile` | MPOR-shifted EE profile `(T,)` |
 | `netting_set_summaries` | Pre-collateral EE/PFE/PSE/EPE per netting set |
-| `cva` / `dva` / `bcva` | XVA scalars |
+| `cva` / `dva` / `bcva` | Credit XVA scalars |
+| `fva` / `mva` / `kva` | Funding/margin/capital XVA scalars (v1.1; 0.0 if not configured) |
 | `pse` / `epe` / `eepe` | Exposure scalars |
+
+```python
+# xVA summary — all adjustments in one call (v1.1)
+agr = result.agreement_results["AGR_001"]
+print(agr.xva_summary())
+# {'agreement_id': 'AGR_001', 'counterparty_id': 'Goldman_Sachs',
+#  'cva': ..., 'dva': ..., 'bcva': ..., 'fva': ..., 'mva': ..., 'kva': ..., 'total_xva': ...}
+```
 
 Supported trade types in YAML: `InterestRateSwap`, `ZeroCouponBond`, `FixedRateBond`,
 `EuropeanOption`, `BarrierOption`, `AsianOption` (auto-registered). Register additional
@@ -781,9 +799,97 @@ from pyxva import CSATerms, ISDAExposureCalculator
 csa  = CSATerms.regvm_standard("Counterparty_A", mta=10_000)
 isda = ISDAExposureCalculator(ns, csa)
 out  = isda.run(results, time_grid, confidence=0.95,
-                cp_hazard_rate=0.008, own_hazard_rate=0.004)
+                cp_hazard_rate=0.008, own_hazard_rate=0.004,
+                funding_spread=0.005)   # optional: adds fva, mva to output
 # out keys: ee, ene, pfe, ee_coll, ee_mpor, pse, epe, eepe,
-#           cva, dva, bcva, net_mtm, csb, lagged_csb, im, collateral
+#           cva, dva, bcva, fva, mva, kva,
+#           net_mtm, csb, lagged_csb, im, collateral
+```
+
+---
+
+## xVA Suite (v1.1)
+
+`BilateralExposureCalculator` computes the full X in xVA: CVA, DVA, FVA, MVA, and KVA.
+All methods accept a scalar hazard/funding rate or a `HazardCurve` for term-structure inputs.
+
+### HazardCurve
+
+```python
+from pyxva import HazardCurve
+
+# Flat spread — one-bucket approximation (spread = λ × LGD)
+hc = HazardCurve.from_flat_spread(spread=0.006, lgd=0.6)   # λ = 0.01
+
+# Term structure — explicit tenor/rate pairs
+hc = HazardCurve.from_tenors(
+    tenors=[1.0, 3.0, 5.0, 10.0],
+    hazard_rates=[0.008, 0.010, 0.012, 0.015],
+)
+
+# Bootstrap from CDS par spreads (closed-form; no external solver)
+hc = HazardCurve.calibrate(
+    cds_tenors=[1.0, 3.0, 5.0, 10.0],
+    cds_spreads=[0.005, 0.008, 0.010, 0.013],
+    recovery=0.40,
+)
+
+hc.survival_probability(5.0)          # Q(5): P(no default before 5yr)
+hc.marginal_default_prob(4.0, 5.0)    # Q(4) − Q(5): PD in year 4→5
+```
+
+### CVA / DVA / FVA / MVA / KVA
+
+```python
+from pyxva import BilateralExposureCalculator, HazardCurve
+
+calc = BilateralExposureCalculator()
+
+# CVA / DVA — now accept float or HazardCurve
+cva = calc.cva_approx(mtm, time_grid, hazard_rate=cp_hc, lgd=0.6)
+dva = calc.dva_approx(mtm, time_grid, own_hazard_rate=own_hc, own_lgd=0.6)
+
+# FVA — cost of funding uncollateralised exposure
+fva = calc.fva_approx(mtm, time_grid, funding=0.005)
+
+# MVA — cost of funding initial margin over the trade life
+from pyxva import REGIMEngine, CSATerms, IMModel
+im_engine = REGIMEngine(CSATerms(im_model=IMModel.SCHEDULE))
+im_profile = im_engine.im_time_profile(trades, time_grid)   # (T,) declining profile
+mva = calc.mva_approx(im_profile, time_grid, funding=0.005)
+
+# KVA — cost of holding regulatory capital (flat t=0 EAD approximation)
+kva = calc.kva_approx(ead_t0=500_000, time_grid=time_grid, cost_of_capital=0.10)
+```
+
+### Per-bucket attribution waterfall
+
+```python
+attribution = calc.xva_attribution(
+    mtm, time_grid,
+    hazard=cp_hc,
+    funding=0.005,
+    im_profile=im_profile,
+    lgd=0.6,
+    own_hazard=own_hc,
+)
+# Returns dict with keys: 'time', 'cva', 'dva', 'fva', 'mva', 'total'
+# Each is a (T-1,) array — contribution per time bucket
+
+# Total CVA across buckets == cva_approx()
+assert attribution["cva"].sum() == pytest.approx(cva)
+```
+
+### IM time profile for MVA
+
+```python
+# im_time_profile() recomputes Schedule IM at each step with
+# residual_maturity = max(0, trade.maturity - t) — naturally declines to 0
+im_profile = im_engine.im_time_profile(trades=[
+    {"asset_class": "IR", "gross_notional": 1e6, "maturity": 5.0},
+], time_grid=time_grid)
+# profile[0] == schedule_im at full maturity
+# profile[-1] == 0.0 (all trades matured)
 ```
 
 ---

@@ -286,3 +286,63 @@ call has non-trivial credit risk throughout its life, not just at expiry.  The a
 MTM — the fair value of the surviving (unbreached) option at time t — gives a smooth,
 economically meaningful exposure profile usable for CVA, collateral, and credit limit
 monitoring.  The formula is O(1) per path per step and adds negligible runtime cost.
+
+---
+
+## 17. HazardCurve: piecewise-constant bootstrap with a closed-form solution
+
+**Choice:** `HazardCurve.calibrate()` bootstraps piecewise-constant hazard rates from CDS
+par spreads using a closed-form algebraic expression rather than a numerical root-finder.
+
+**Why:** For piecewise-constant hazard rates the CDS pricing equation at each tenor is
+linear in α = exp(−λ_k × Δt_k) — the survival fraction across the new bucket.  Solving
+for α algebraically (see `hazard_curve.py`) produces an exact answer at O(N) cost with no
+iteration, no convergence issues, and no scipy dependency.  The formula is derived by
+separating the protection and premium leg contributions from prior buckets (accumulated
+as `accum_prot`, `accum_prem`) from the bucket being calibrated.
+
+---
+
+## 18. _integral_xva: one helper for CVA, DVA, FVA, and MVA
+
+**Choice:** All four xVA integrals share a single `_integral_xva(time_grid, profile,
+hazard, lgd)` helper in `bilateral.py`.  FVA and MVA are expressed as survival-probability-
+weighted integrals (same structure as CVA) rather than simple time-weighted integrals.
+
+**Why:** The natural FVA formula `s × Σ EE(t_i) × Δt_i` is the zero-hazard-rate limit
+of `Σ EE(t_i) × [Q_fund(t_{i-1}) − Q_fund(t_i)]`.  Using the full survival-probability
+weighting is consistent with the CVA framework (both measure the cost of default /
+funding stress arriving in a given time bucket), avoids duplicating the loop logic, and
+allows `float | HazardCurve` inputs without branching outside the helper.  For small
+spreads the two formulas are numerically equivalent; for large spreads the survival-
+weighted version is more conservative and internally consistent.
+
+---
+
+## 19. KVA uses a flat t=0 EAD profile (documented approximation)
+
+**Choice:** `kva_approx()` uses `KVA ≈ CoC × EAD_0 × T` where `EAD_0` is the SA-CCR EAD
+at t=0, rather than a full path-dependent EAD profile.
+
+**Why:** The correct KVA formula integrates `K(t_i) = EAD(t_i)` at each simulation step,
+requiring `SACCRCalculator` to run on every Monte Carlo path at every time node — an
+O(n_paths × T × n_trades) operation per agreement.  For a research/demo library this is
+unnecessary complexity; the t=0 EAD is a reasonable proxy because SA-CCR EAD declines
+slowly with time for typical portfolios.  The approximation is clearly documented, and the
+interface is designed for easy replacement: swap `ead_t0` for a `(T,)` profile and
+`np.trapezoid(ead_profile, time_grid) × CoC` when the full calculation is needed.
+
+---
+
+## 20. MVA IM profile via residual-maturity Schedule IM (im_time_profile)
+
+**Choice:** `REGIMEngine.im_time_profile()` recomputes Schedule IM at each time step
+using `residual_maturity = max(0, trade.maturity − t)` and skips expired trades.
+
+**Why:** A static (t=0) IM profile overstates MVA for long-dated portfolios: a 5-year
+swap has full IM today but zero IM at maturity.  Using residual maturity gives the
+naturally declining profile that tracks the actual margin obligation over time.  This is
+deterministic (no path-dependence) — a known simplification.  The sensitivity-based SIMM
+alternative requires time-path sensitivities not currently in scope, but the
+`im_time_profile` interface is intentionally generic: any declining `(T,)` array can be
+passed directly to `mva_approx()` without going through `REGIMEngine`.

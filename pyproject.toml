@@ -1,6 +1,6 @@
 [project]
 name = "pyxva"
-version = "1.0.0"
+version = "1.1.0"
 description = "Monte Carlo XVA library for counterparty credit risk analytics"
 readme = "README.md"
 license = { file = "LICENSE" }
