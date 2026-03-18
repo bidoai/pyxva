@@ -1,5 +1,5 @@
 [project]
-name = "risk-analytics"
+name = "pyxva"
 version = "1.0.0"
 description = "Monte Carlo XVA library for counterparty credit risk analytics"
 readme = "README.md"
@@ -31,8 +31,11 @@ Changelog = "https://github.com/bidoai/risk_analytics/blob/main/CHANGELOG.md"
 risk-analytics-demo = "risk_analytics.demo:main"
 
 [build-system]
-requires = ["uv_build>=0.10.11,<0.11.0"]
-build-backend = "uv_build"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/risk_analytics"]
 
 [dependency-groups]
 dev = [
