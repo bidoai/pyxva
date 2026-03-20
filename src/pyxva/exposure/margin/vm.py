@@ -7,9 +7,50 @@ Implements the bilateral VM call calculation per:
 """
 from __future__ import annotations
 
+from math import ceil, floor
+
 import numpy as np
+from numba import njit, prange
 
 from pyxva.exposure.csa import CSATerms, MarginRegime
+
+
+@njit(parallel=True, cache=True)
+def _path_csb_nb(
+    target: np.ndarray,
+    call_mask: np.ndarray,
+    mta_p: float,
+    mta_c: float,
+    rounding_nearest: float,
+) -> np.ndarray:
+    """Path-dependent CSB loop — compiled with Numba.
+
+    Parallelised over paths (prange).  Each path's time-step loop is sequential
+    (CSB depends on the previous step's balance), but paths are fully independent,
+    so there are no data races.  The (n_paths, T) row-major layout means each path
+    occupies a contiguous row, giving cache-friendly access for the inner time loop.
+    """
+    n_paths, T = target.shape
+    csb = np.empty((n_paths, T))
+    for p in prange(n_paths):
+        csb[p, 0] = target[p, 0]
+        for i in range(1, T):
+            if not call_mask[i]:
+                csb[p, i] = csb[p, i - 1]
+            else:
+                excess = target[p, i] - csb[p, i - 1]
+                if excess >= mta_p or excess <= -mta_c:
+                    new_val = target[p, i]
+                    if rounding_nearest > 0.0:
+                        unit = rounding_nearest
+                        if new_val >= 0.0:
+                            new_val = floor(new_val / unit) * unit
+                        else:
+                            new_val = ceil(new_val / unit) * unit
+                    csb[p, i] = new_val
+                else:
+                    csb[p, i] = csb[p, i - 1]
+    return csb
 
 
 class REGVMEngine:
@@ -108,33 +149,7 @@ class REGVMEngine:
                 call_mask[i] = True
                 last_call_t = t
 
-        csb = np.empty((n_paths, T))
-        # At inception the balance is at the day-0 target (equilibrium start).
-        csb[:, 0] = target[:, 0]
-
-        for i in range(1, T):
-            if not call_mask[i]:
-                # No margin call this period: balance is unchanged.
-                csb[:, i] = csb[:, i - 1]
-                continue
-
-            excess = target[:, i] - csb[:, i - 1]
-
-            # Transfer fires when gap exceeds the applicable MTA.
-            transfer = (excess >= mta_p) | (excess <= -mta_c)
-            new_csb = np.where(transfer, target[:, i], csb[:, i - 1])
-
-            if self.csa.rounding_nearest > 0:
-                unit = self.csa.rounding_nearest
-                new_csb = np.where(
-                    new_csb >= 0,
-                    np.floor(new_csb / unit) * unit,
-                    np.ceil(new_csb / unit) * unit,
-                )
-
-            csb[:, i] = new_csb
-
-        return csb
+        return _path_csb_nb(target, call_mask, mta_p, mta_c, float(self.csa.rounding_nearest))
 
     def vm_call(self, net_mtm: np.ndarray) -> np.ndarray:
         """Marginal VM call from our perspective (positive = we call from cp).
