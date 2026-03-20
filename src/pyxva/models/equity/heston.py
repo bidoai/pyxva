@@ -1,14 +1,55 @@
 from __future__ import annotations
 
 import logging
+from math import exp, log, sqrt
 
 import numpy as np
+from numba import njit, prange
 from scipy.optimize import minimize
 
 from pyxva.core.base import StochasticModel
 from pyxva.core.paths import SimulationResult
 
 logger = logging.getLogger(__name__)
+
+
+@njit(parallel=True, cache=True)
+def _heston_step_nb(
+    S: np.ndarray,
+    v: np.ndarray,
+    dW_S: np.ndarray,
+    dW_v: np.ndarray,
+    dt: np.ndarray,
+    sqrt_dt: np.ndarray,
+    kappa: float,
+    theta: float,
+    xi: float,
+    mu: float,
+) -> None:
+    """Euler-Maruyama Heston step loop — compiled with Numba, modifies S and v in-place.
+
+    Parallelised over paths (prange).  Each path's time-step loop is sequential
+    but paths are fully independent, so there are no data races.  The (n_paths, T)
+    row-major layout means each path occupies a contiguous row, giving cache-friendly
+    access for the inner time loop.
+    """
+    n_paths = S.shape[0]
+    T = S.shape[1]
+    for p in prange(n_paths):
+        for i in range(T - 1):
+            v_i = v[p, i]
+            v_plus = v_i if v_i > 0.0 else 0.0  # full truncation
+            sqrt_v = sqrt(v_plus)
+            v[p, i + 1] = (
+                v_i
+                + kappa * (theta - v_plus) * dt[i]
+                + xi * sqrt_v * sqrt_dt[i] * dW_v[p, i]
+            )
+            S[p, i + 1] = exp(
+                log(S[p, i])
+                + (mu - 0.5 * v_plus) * dt[i]
+                + sqrt_v * sqrt_dt[i] * dW_S[p, i]
+            )
 
 
 class HestonModel(StochasticModel):
@@ -102,18 +143,7 @@ class HestonModel(StochasticModel):
         # Precompute per-step scalars outside the loop
         sqrt_dt = np.sqrt(dt)  # (T-1,)
 
-        for i in range(T - 1):
-            v_plus = np.maximum(v[:, i], 0.0)  # full truncation — path-dependent, loop unavoidable
-            sqrt_v = np.sqrt(v_plus)
-
-            v[:, i + 1] = (
-                v[:, i]
-                + self.kappa * (self.theta - v_plus) * dt[i]
-                + self.xi * sqrt_v * sqrt_dt[i] * dW_v[:, i]
-            )
-
-            log_S = np.log(S[:, i]) + (self.mu - 0.5 * v_plus) * dt[i] + sqrt_v * sqrt_dt[i] * dW_S[:, i]
-            S[:, i + 1] = np.exp(log_S)
+        _heston_step_nb(S, v, dW_S, dW_v, dt, sqrt_dt, self.kappa, self.theta, self.xi, self.mu)
 
         paths = np.stack([S, v], axis=2)  # (n_paths, T, 2)
 
