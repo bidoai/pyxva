@@ -205,9 +205,7 @@ CVA is the price of counterparty default risk embedded in an OTC derivative. It 
 
 ### The Formula
 
-```
-CVA = -LGD × Σᵢ EE(tᵢ) × [Q(tᵢ₋₁) - Q(tᵢ)]
-```
+$$\text{CVA} = -\text{LGD} \sum_{i=1}^{T} \text{EE}(t_i) \cdot [Q(t_{i-1}) - Q(t_i)]$$
 
 where:
 - LGD = Loss Given Default (1 − Recovery Rate, typically 0.4–0.6)
@@ -298,9 +296,7 @@ Under IFRS 13, derivatives must be measured at fair value, which includes CVA. T
 
 DVA is the value to the bank of the possibility that the **bank itself** defaults. If the bank goes bust and owes money on a derivative, it will pay less than face value. Therefore, today's fair value should reflect that discount.
 
-```
-DVA = LGD_own × Σᵢ |ENE(tᵢ)| × [Q_own(tᵢ₋₁) - Q_own(tᵢ)]
-```
+$$\text{DVA} = \text{LGD}_{\text{own}} \sum_{i=1}^{T} |\text{ENE}(t_i)| \cdot [Q_{\text{own}}(t_{i-1}) - Q_{\text{own}}(t_i)]$$
 
 ### Why DVA is Controversial
 
@@ -312,9 +308,7 @@ DVA = LGD_own × Σᵢ |ENE(tᵢ)| × [Q_own(tᵢ₋₁) - Q_own(tᵢ)]
 
 ### The BCVA Decomposition
 
-```
-BCVA = CVA - DVA
-```
+$$\text{BCVA} = \text{CVA} - \text{DVA}$$
 
 In a fully bilateral world where neither party is risk-free:
 - When your counterparty is in the money: you're the credit risk taker → CVA applies
@@ -348,17 +342,13 @@ This funding cost — not captured in the risk-free derivative price — is FVA.
 
 ### The Formula
 
-```
-FVA = -s_f × ∫₀ᵀ EE(t) dt  +  s_f × ∫₀ᵀ |ENE(t)| dt
-```
+$$\text{FVA} = -s_f \int_0^T \text{EE}(t) \, dt + s_f \int_0^T |\text{ENE}(t)| \, dt$$
 
 The first term is the cost of funding your positive exposure (lending leg). The second is the benefit of receiving funding from the counterparty's negative exposure (borrowing leg).
 
 Or equivalently:
 
-```
-FVA = s_f × ∫₀ᵀ [EE(t) - |ENE(t)|] dt
-```
+$$\text{FVA} = s_f \int_0^T [\text{EE}(t) - |\text{ENE}(t)|] \, dt$$
 
 where s_f is the funding spread. Note this is the net funding cost — when you're in the money you're a net borrower; when you're out of the money you're a net lender.
 
@@ -417,9 +407,7 @@ This IM is posted to a segregated custodian and earns approximately risk-free ra
 
 ### The Formula
 
-```
-MVA = s_f × ∫₀ᵀ E[IM(t)] dt
-```
+$$\text{MVA} = s_f \int_0^T \text{E}[\text{IM}(t)] \, dt$$
 
 where:
 - s_f = bank's marginal funding spread (same as FVA)
@@ -460,15 +448,11 @@ KVA prices the ongoing regulatory capital consumed by a trade over its life. The
 
 ### The Formula
 
-```
-KVA = CoC × ∫₀ᵀ E[RWA(t)] × (8% / 12.5) dt
-```
+$$\text{KVA} = \text{CoC} \int_0^T E[\text{RWA}(t)] \cdot \frac{8\%}{12.5} \, dt$$
 
 More simply:
 
-```
-KVA = CoC × EAD(t₀) × T    (flat approximation)
-```
+$$\text{KVA} = \text{CoC} \times \text{EAD}(t_0) \times T \quad \text{(flat approximation)}$$
 
 where:
 - CoC = cost of capital (return on equity target minus risk-free rate), typically 8–15%
