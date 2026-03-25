@@ -154,6 +154,37 @@ class TestAtTimes:
         assert out.shape == (1, 4, 2)
 
 
+class TestAtBoundaryEnforcement:
+    """SimulationResult.at(t) must raise on out-of-bounds t (not silently clamp)."""
+
+    def test_raises_above_grid_max(self):
+        result = make_linear_result()  # grid [0, 1]
+        with pytest.raises(ValueError, match="beyond the end"):
+            result.at(1.001)
+
+    def test_raises_below_grid_min(self):
+        result = make_linear_result()  # grid [0, 1]
+        with pytest.raises(ValueError, match="before the start"):
+            result.at(-0.001)
+
+    def test_exact_boundary_is_ok(self):
+        result = make_linear_result()
+        # Exact endpoints must not raise
+        result.at(0.0)
+        result.at(1.0)
+
+    def test_near_boundary_within_tolerance_is_ok(self):
+        result = make_linear_result()
+        # Within floating-point tolerance (1e-9)
+        result.at(1.0 + 1e-10)
+        result.at(0.0 - 1e-10)
+
+    def test_error_message_includes_t_value(self):
+        result = make_linear_result()
+        with pytest.raises(ValueError, match="5"):
+            result.at(5.0)
+
+
 class TestDefaultInterpolationSpace:
     def test_default_interpolation_space_is_linear(self):
         time_grid = np.array([0.0, 1.0])

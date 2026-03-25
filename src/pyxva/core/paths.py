@@ -65,15 +65,39 @@ class SimulationResult:
         Parameters
         ----------
         t : float
-            Time point in years.
+            Time point in years.  Must be within [time_grid[0], time_grid[-1]].
 
         Returns
         -------
         np.ndarray, shape (n_paths, n_factors)
             Interpolated state values at time t for each path and factor.
+
+        Raises
+        ------
+        ValueError
+            If t is outside the simulation time grid.  Extrapolating beyond
+            maturity is almost always a logic error (e.g. a trade matured but
+            the time loop kept running).
         """
-        # Check if t is already in the time grid (within tolerance)
         tol = 1e-9
+        t_min = float(self.time_grid[0])
+        t_max = float(self.time_grid[-1])
+
+        if t < t_min - tol:
+            raise ValueError(
+                f"SimulationResult.at({t:.6g}): t is before the start of the "
+                f"time grid (t_min={t_min:.6g}).  "
+                "Check that your time grid starts at t=0."
+            )
+        if t > t_max + tol:
+            raise ValueError(
+                f"SimulationResult.at({t:.6g}): t is beyond the end of the "
+                f"time grid (t_max={t_max:.6g}).  "
+                "A trade may have been priced past its maturity, or the "
+                "time grid does not cover the full trade life."
+            )
+
+        # Check if t is already in the time grid (within tolerance)
         diffs = np.abs(self.time_grid - t)
         idx_exact = np.argmin(diffs)
         if diffs[idx_exact] < tol:
@@ -83,7 +107,8 @@ class SimulationResult:
         lo = np.searchsorted(self.time_grid, t, side="right") - 1
         hi = lo + 1
 
-        # Clamp to valid range
+        # Clamp lo/hi to valid range (t is guaranteed in-bounds so this is
+        # only a float-precision guard, not a silent extrapolation)
         lo = max(0, min(lo, len(self.time_grid) - 2))
         hi = lo + 1
 
