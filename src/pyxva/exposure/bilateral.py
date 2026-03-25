@@ -258,35 +258,50 @@ class BilateralExposureCalculator(ExposureCalculator):
         self,
         mtm: np.ndarray,
         time_grid: np.ndarray,
-        funding: "float | HazardCurve",
+        borrow_spread: "float | HazardCurve | None" = None,
+        lend_spread: "float | HazardCurve | None" = None,
+        *,
+        funding: "float | HazardCurve | None" = None,
     ) -> float:
         """Approximate FVA (Funding Valuation Adjustment).
 
-        Cost of funding uncollateralised exposure and benefit from negative
-        exposure (economically: we borrow from the counterparty):
+        Supports asymmetric funding spreads — the cost of funding receivables
+        (positive exposure) differs from the benefit on payables (negative
+        exposure), which is standard on any real trading desk:
 
-            FVA ≈ s_fund × Σ_i EE(t_i) × Δt_i
-                - s_fund × Σ_i |ENE(t_i)| × Δt_i
+            FVA = borrow_spread × Σ_i EE(t_i) × Δt_i
+                - lend_spread  × Σ_i |ENE(t_i)| × Δt_i
 
-        When ``funding`` is a ``HazardCurve``, the funding spread at each
-        step is implied from the marginal default probability: the integral
-        uses the survival-weighted time measure so that the formula aligns
-        with CVA for consistency in BCVA-FVA frameworks.
+        When ``lend_spread`` is ``None`` it defaults to ``borrow_spread``
+        (symmetric FVA, equivalent to the previous single-spread interface).
+
+        When a spread argument is a ``HazardCurve``, the integral uses the
+        survival-weighted time measure (aligns FVA with CVA in BCVA-FVA
+        frameworks).
 
         Parameters
         ----------
-        funding : float | HazardCurve
-            Flat funding spread (annualised, e.g. OIS + funding margin) or
-            a ``HazardCurve`` for term-structure funding spreads.
+        borrow_spread : float | HazardCurve
+            Cost of funding uncollateralised receivables (positive exposure).
+        lend_spread : float | HazardCurve | None
+            Benefit from negative exposure (counterparty effectively lends to
+            us).  Defaults to ``borrow_spread`` for symmetric FVA.
 
         Returns
         -------
-        float — positive = funding cost (unfavourable), negative = funding benefit
+        float — positive = net funding cost, negative = net funding benefit
         """
+        # Backwards-compatible alias: fva_approx(mtm, grid, funding=s)
+        if borrow_spread is None and funding is not None:
+            borrow_spread = funding
+        if borrow_spread is None:
+            raise TypeError("fva_approx() requires 'borrow_spread' (or legacy 'funding') argument")
+        if lend_spread is None:
+            lend_spread = borrow_spread
         ee = self.expected_exposure(mtm)
         ene_abs = np.abs(self.ene(mtm))
-        fva_cost = self._integral_xva(time_grid, ee, funding, lgd=1.0)
-        fva_benefit = self._integral_xva(time_grid, ene_abs, funding, lgd=1.0)
+        fva_cost = self._integral_xva(time_grid, ee, borrow_spread, lgd=1.0)
+        fva_benefit = self._integral_xva(time_grid, ene_abs, lend_spread, lgd=1.0)
         return fva_cost - fva_benefit
 
     def mva_approx(
@@ -316,33 +331,43 @@ class BilateralExposureCalculator(ExposureCalculator):
 
     def kva_approx(
         self,
-        ead_t0: float,
+        ead: "float | np.ndarray",
         time_grid: np.ndarray,
         cost_of_capital: float = 0.10,
     ) -> float:
         """Approximate KVA (Capital Valuation Adjustment).
 
-        Cost of holding regulatory capital over the trade life using a flat
-        t=0 SA-CCR EAD profile (documented approximation):
+        Supports both flat-EAD (legacy approximation) and path-dependent EAD
+        profiles computed by ``SACCRCalculator.ead_profile()``:
 
+        **Flat EAD (scalar)**
             KVA ≈ CoC × EAD_0 × T
 
-        where T = time_grid[-1].
+        **Path-dependent EAD (array, shape (T,))**
+            KVA = CoC × ∫ EAD(t) dt  (trapezoidal rule)
+
+        The path-dependent form correctly captures declining residual maturity
+        and changing MTM as the portfolio ages, producing a more accurate
+        capital charge than the flat-EAD approximation.
 
         Parameters
         ----------
-        ead_t0 : float
-            SA-CCR Exposure-at-Default at t=0 (from ``SACCRCalculator``).
+        ead : float or np.ndarray, shape (T,)
+            Scalar EAD at t=0 (flat approximation) **or** a time series of
+            EADs from ``SACCRCalculator.ead_profile()``.
         time_grid : np.ndarray, shape (T,)
         cost_of_capital : float
-            Annual cost-of-capital rate (default 10%).
+            Annual cost-of-capital rate (firm-specific hurdle; default 10%).
 
         Returns
         -------
         float
         """
-        T = float(time_grid[-1] - time_grid[0])
-        return float(cost_of_capital * ead_t0 * T)
+        if np.isscalar(ead):
+            T = float(time_grid[-1] - time_grid[0])
+            return float(cost_of_capital * float(ead) * T)
+        ead_arr = np.asarray(ead, dtype=float)
+        return float(cost_of_capital * np.trapezoid(ead_arr, time_grid))
 
     def xva_attribution(
         self,
@@ -353,6 +378,7 @@ class BilateralExposureCalculator(ExposureCalculator):
         im_profile: "np.ndarray | None" = None,
         lgd: float = 0.6,
         own_hazard: "float | HazardCurve | None" = None,
+        lend_spread: "float | HazardCurve | None" = None,
     ) -> dict:
         """Per-time-bucket xVA attribution waterfall.
 
@@ -366,7 +392,10 @@ class BilateralExposureCalculator(ExposureCalculator):
         hazard : float | HazardCurve
             Counterparty hazard rate / curve (for CVA).
         funding : float | HazardCurve | None
-            Funding spread / curve (for FVA/MVA). If None, FVA/MVA not computed.
+            Borrow spread for FVA cost (EE leg). If None, FVA/MVA not computed.
+        lend_spread : float | HazardCurve | None
+            Lend spread for FVA benefit (ENE leg). Defaults to ``funding``
+            (symmetric FVA) when not provided.
         im_profile : np.ndarray, shape (T,) | None
             Expected IM profile for MVA attribution. If None, MVA not computed.
         lgd : float
@@ -402,10 +431,12 @@ class BilateralExposureCalculator(ExposureCalculator):
         fva_buckets = np.zeros(n_buckets)
         mva_buckets = np.zeros(n_buckets)
         if funding is not None:
-            fund_pd = _marginal_pd_vec(funding, time_grid)
-            fva_buckets = (ee[1:] - ene_abs[1:]) * fund_pd
+            _lend = lend_spread if lend_spread is not None else funding
+            borrow_pd = _marginal_pd_vec(funding, time_grid)
+            lend_pd = _marginal_pd_vec(_lend, time_grid)
+            fva_buckets = ee[1:] * borrow_pd - ene_abs[1:] * lend_pd
             if im_profile is not None:
-                mva_buckets = im_profile[1:] * fund_pd
+                mva_buckets = im_profile[1:] * borrow_pd
 
         total_buckets = cva_buckets - dva_buckets + fva_buckets + mva_buckets
 
@@ -451,9 +482,10 @@ class BilateralExposureCalculator(ExposureCalculator):
         cp_hazard_rate: "float | HazardCurve | None" = None,
         own_hazard_rate: "float | HazardCurve | None" = None,
         funding_spread: "float | HazardCurve | None" = None,
+        lend_spread: "float | HazardCurve | None" = None,
         im_profile: "np.ndarray | None" = None,
         cost_of_capital: float = 0.10,
-        ead_t0: float = 0.0,
+        ead_t0: "float | np.ndarray" = 0.0,
     ) -> dict:
         """Full bilateral exposure summary.
 
@@ -495,11 +527,20 @@ class BilateralExposureCalculator(ExposureCalculator):
         result["kva"] = 0.0
 
         if funding_spread is not None:
-            result["fva"] = self.fva_approx(net_mtm, time_grid, funding_spread)
+            result["fva"] = self.fva_approx(
+                net_mtm, time_grid,
+                borrow_spread=funding_spread,
+                lend_spread=lend_spread,
+            )
             if im_profile is not None:
                 result["mva"] = self.mva_approx(im_profile, time_grid, funding_spread)
 
-        if ead_t0 > 0.0:
+        ead_nonzero = (
+            (np.any(np.asarray(ead_t0) > 0.0))
+            if not np.isscalar(ead_t0)
+            else ead_t0 > 0.0
+        )
+        if ead_nonzero:
             result["kva"] = self.kva_approx(ead_t0, time_grid, cost_of_capital)
 
         return result
@@ -596,6 +637,7 @@ class ISDAExposureCalculator:
         cp_hazard_rate: "float | HazardCurve | None" = None,
         own_hazard_rate: "float | HazardCurve | None" = None,
         funding_spread: "float | HazardCurve | None" = None,
+        lend_spread: "float | HazardCurve | None" = None,
         cost_of_capital: float = 0.10,
     ) -> dict:
         """Execute the full bilateral exposure pipeline.
@@ -700,6 +742,7 @@ class ISDAExposureCalculator:
             cp_hazard_rate=cp_hazard_rate,
             own_hazard_rate=own_hazard_rate,
             funding_spread=funding_spread,
+            lend_spread=lend_spread,
             im_profile=im_profile,
             cost_of_capital=cost_of_capital,
         )

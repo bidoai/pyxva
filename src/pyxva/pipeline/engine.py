@@ -281,6 +281,7 @@ def _compute_agreement_result(
     cp_hazard = agr_cfg.cp_hazard_rate if agr_cfg else None
     own_hazard = agr_cfg.own_hazard_rate if agr_cfg else None
     funding_spread = agr_cfg.funding_spread if agr_cfg else None
+    lend_spread = agr_cfg.lend_spread if agr_cfg else None
     cost_of_capital = agr_cfg.cost_of_capital if agr_cfg else 0.10
 
     # Compute netting set pre-collateral summaries
@@ -318,6 +319,7 @@ def _compute_agreement_result(
         cp_hazard_rate=cp_hazard,
         own_hazard_rate=own_hazard,
         funding_spread=funding_spread,
+        lend_spread=lend_spread,
         cost_of_capital=cost_of_capital,
     )
 

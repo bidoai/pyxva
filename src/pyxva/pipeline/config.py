@@ -72,6 +72,7 @@ class AgreementConfig:
     cp_hazard_rate: Optional[float] = None
     own_hazard_rate: Optional[float] = None
     funding_spread: Optional[float] = None
+    lend_spread: Optional[float] = None   # asymmetric FVA: benefit leg spread (defaults to funding_spread)
     cost_of_capital: float = 0.10
 
 
@@ -165,6 +166,7 @@ class EngineConfig:
                 cp_hazard_rate=agr_raw.get("cp_hazard_rate"),
                 own_hazard_rate=agr_raw.get("own_hazard_rate"),
                 funding_spread=agr_raw.get("funding_spread"),
+                lend_spread=agr_raw.get("lend_spread"),
                 cost_of_capital=agr_raw.get("cost_of_capital", 0.10),
             ))
 

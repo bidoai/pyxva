@@ -40,6 +40,8 @@ import math
 from dataclasses import dataclass, field
 from typing import Optional
 
+import numpy as np
+
 
 # ---------------------------------------------------------------------------
 # Supervisory factor table (Basel III CRE52.72)
@@ -510,6 +512,64 @@ class SACCRCalculator:
         else:
             # Unknown pricer type: skip
             return None
+
+    def ead_profile(
+        self,
+        time_grid: np.ndarray,
+        mean_mtm_by_trade: Optional[dict] = None,
+    ) -> np.ndarray:
+        """Compute SA-CCR EAD at each time step using declining residual maturity.
+
+        At each time ``t`` in ``time_grid``:
+        - Each trade's residual maturity is ``max(0, maturity - t)``.
+        - IR trades have their start/end dates shifted by ``t``.
+        - MTMs are updated from ``mean_mtm_by_trade`` (mean over paths at each step).
+
+        This produces a path-dependent EAD profile suitable for KVA integration:
+
+            KVA = CoC × ∫ EAD(t) dt
+
+        Parameters
+        ----------
+        time_grid : np.ndarray, shape (T,)
+            Simulation time grid in years.
+        mean_mtm_by_trade : dict[str, np.ndarray], optional
+            Mapping of ``trade_id`` → ``(T,)`` array of mean MTM at each step.
+            If None or a trade is not present, MTM is held at the initial
+            ``trade.current_mtm`` for all steps.
+
+        Returns
+        -------
+        np.ndarray, shape (T,)
+            EAD at each time step.
+        """
+        mtm_map = mean_mtm_by_trade or {}
+        T = len(time_grid)
+        ead_arr = np.zeros(T)
+
+        for t_idx, t in enumerate(time_grid):
+            step_calc = SACCRCalculator()
+            for trade in self._trades:
+                res_mat = max(0.0, trade.maturity - float(t))
+                mtm_series = mtm_map.get(trade.trade_id)
+                mtm_t = float(mtm_series[t_idx]) if mtm_series is not None else trade.current_mtm
+                updated = SACCRTrade(
+                    trade_id=trade.trade_id,
+                    asset_class=trade.asset_class,
+                    notional=trade.notional,
+                    maturity=res_mat,
+                    current_mtm=mtm_t,
+                    delta=trade.delta,
+                    start_date=max(0.0, trade.start_date - float(t)),
+                    end_date=max(0.0, trade.end_date - float(t)),
+                    currency=trade.currency,
+                    mpor=trade.mpor,
+                    is_margined=trade.is_margined,
+                )
+                step_calc.add_trade(updated)
+            ead_arr[t_idx] = step_calc.ead()
+
+        return ead_arr
 
     @staticmethod
     def _supervisory_factor(trade: SACCRTrade) -> float:

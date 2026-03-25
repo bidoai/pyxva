@@ -570,3 +570,170 @@ class TestBilateralSummaryXVA:
             im_profile=im_profile,
         )
         assert summary["mva"] > 0
+
+
+# ---------------------------------------------------------------------------
+# Asymmetric FVA (v1.2)
+# ---------------------------------------------------------------------------
+
+class TestAsymmetricFVA:
+    """borrow_spread != lend_spread produces directionally correct FVA."""
+
+    def setup_method(self):
+        rng = np.random.default_rng(5)
+        n_paths, T = 200, 20
+        self.grid = np.linspace(0, 5.0, T)
+        # Mostly positive MTM (we hold receivables)
+        self.mtm = np.abs(rng.normal(50_000, 20_000, size=(n_paths, T)))
+        self.calc = BilateralExposureCalculator()
+
+    def test_symmetric_borrow_lend_matches_single_spread(self):
+        """With equal borrow/lend spreads, result must equal legacy single-spread FVA."""
+        spread = 0.003
+        fva_legacy = self.calc.fva_approx(self.mtm, self.grid, funding=spread)
+        fva_asym = self.calc.fva_approx(
+            self.mtm, self.grid, borrow_spread=spread, lend_spread=spread
+        )
+        assert fva_legacy == pytest.approx(fva_asym, rel=1e-10)
+
+    def test_higher_borrow_increases_fva_cost(self):
+        """Higher borrow spread increases FVA (more expensive to fund receivables)."""
+        fva_low = self.calc.fva_approx(self.mtm, self.grid, borrow_spread=0.002)
+        fva_high = self.calc.fva_approx(self.mtm, self.grid, borrow_spread=0.010)
+        assert fva_high > fva_low
+
+    def test_higher_lend_decreases_fva(self):
+        """Higher lend spread on ENE leg reduces net FVA (larger benefit)."""
+        fva_low_lend = self.calc.fva_approx(
+            self.mtm, self.grid, borrow_spread=0.005, lend_spread=0.001
+        )
+        fva_high_lend = self.calc.fva_approx(
+            self.mtm, self.grid, borrow_spread=0.005, lend_spread=0.010
+        )
+        # Larger lend spread → more benefit → lower net FVA
+        assert fva_high_lend <= fva_low_lend
+
+    def test_lend_spread_none_defaults_to_borrow(self):
+        spread = 0.004
+        fva_explicit = self.calc.fva_approx(
+            self.mtm, self.grid, borrow_spread=spread, lend_spread=spread
+        )
+        fva_default = self.calc.fva_approx(
+            self.mtm, self.grid, borrow_spread=spread, lend_spread=None
+        )
+        assert fva_explicit == pytest.approx(fva_default, rel=1e-10)
+
+    def test_bilateral_summary_threads_lend_spread(self):
+        """bilateral_summary passes lend_spread through to fva_approx."""
+        summary_sym = self.calc.bilateral_summary(
+            self.mtm, self.grid, funding_spread=0.005
+        )
+        summary_asym = self.calc.bilateral_summary(
+            self.mtm, self.grid, funding_spread=0.005, lend_spread=0.001
+        )
+        # Lower lend spread on ENE → higher net FVA (less benefit)
+        assert summary_asym["fva"] >= summary_sym["fva"]
+
+
+# ---------------------------------------------------------------------------
+# Path-dependent KVA via SACCRCalculator.ead_profile() (v1.2)
+# ---------------------------------------------------------------------------
+
+class TestPathDependentKVA:
+    from pyxva.exposure.saccr import SACCRCalculator, SACCRTrade
+
+    def _make_ir_calc(self) -> "SACCRCalculator":
+        from pyxva.exposure.saccr import SACCRCalculator, SACCRTrade
+        calc = SACCRCalculator()
+        calc.add_trade(SACCRTrade(
+            trade_id="swap1",
+            asset_class="ir",
+            notional=10_000_000,
+            maturity=5.0,
+            start_date=0.0,
+            end_date=5.0,
+            current_mtm=50_000,
+            currency="USD",
+        ))
+        return calc
+
+    def test_ead_profile_shape(self):
+        calc = self._make_ir_calc()
+        grid = np.linspace(0, 5.0, 20)
+        profile = calc.ead_profile(grid)
+        assert profile.shape == (20,)
+
+    def test_ead_profile_declining(self):
+        """EAD should generally decline as residual maturity decreases."""
+        calc = self._make_ir_calc()
+        grid = np.linspace(0, 5.0, 20)
+        profile = calc.ead_profile(grid)
+        # Compare first third vs last third of profile
+        assert profile[:5].mean() > profile[-5:].mean()
+
+    def test_ead_profile_addon_zero_at_maturity(self):
+        """At trade maturity, residual maturity = 0 → supervisory duration = 0 → AddOn = 0.
+        The RC (replacement cost) may still be non-zero if MTM > 0, but the PFE AddOn
+        should be zero since there is no remaining duration.
+        """
+        from pyxva.exposure.saccr import SACCRCalculator, SACCRTrade
+        calc = SACCRCalculator()
+        # Trade with zero current MTM — so RC=0 too, meaning EAD=0 at maturity
+        calc.add_trade(SACCRTrade(
+            trade_id="swap1",
+            asset_class="ir",
+            notional=10_000_000,
+            maturity=5.0,
+            start_date=0.0,
+            end_date=5.0,
+            current_mtm=0.0,  # zero MTM so RC=0 at all times
+            currency="USD",
+        ))
+        grid = np.array([0.0, 5.0])
+        profile = calc.ead_profile(grid)
+        # At t=5: residual maturity=0, SD=0, AddOn=0, RC=max(0,0)=0 → EAD=0
+        assert profile[-1] == pytest.approx(0.0, abs=1e-6)
+
+    def test_kva_approx_scalar_matches_legacy(self):
+        """kva_approx with scalar EAD must match the old CoC × EAD × T formula."""
+        calc = BilateralExposureCalculator()
+        grid = np.linspace(0, 5.0, 20)
+        ead = 500_000.0
+        coc = 0.10
+        expected = coc * ead * (grid[-1] - grid[0])
+        result = calc.kva_approx(ead, grid, cost_of_capital=coc)
+        assert result == pytest.approx(expected, rel=1e-10)
+
+    def test_kva_approx_array_lower_than_flat(self):
+        """Path-dependent KVA should be lower than flat EAD (EAD declines over time)."""
+        calc_bilateral = BilateralExposureCalculator()
+        saccr_calc = self._make_ir_calc()
+        grid = np.linspace(0, 5.0, 20)
+        ead0 = saccr_calc.ead()
+        profile = saccr_calc.ead_profile(grid)
+
+        kva_flat = calc_bilateral.kva_approx(ead0, grid, cost_of_capital=0.10)
+        kva_path = calc_bilateral.kva_approx(profile, grid, cost_of_capital=0.10)
+        # Declining EAD profile → integral < flat × T
+        assert kva_path < kva_flat
+
+    def test_kva_approx_with_mtm_series(self):
+        """ead_profile with MTM series must run without error and return (T,) array."""
+        from pyxva.exposure.saccr import SACCRCalculator, SACCRTrade
+        calc = SACCRCalculator()
+        calc.add_trade(SACCRTrade(
+            trade_id="t1",
+            asset_class="ir",
+            notional=1_000_000,
+            maturity=3.0,
+            start_date=0.0,
+            end_date=3.0,
+            current_mtm=0.0,
+            currency="USD",
+        ))
+        T = 15
+        grid = np.linspace(0, 3.0, T)
+        mtm_series = {"t1": np.linspace(10_000, -5_000, T)}
+        profile = calc.ead_profile(grid, mean_mtm_by_trade=mtm_series)
+        assert profile.shape == (T,)
+        assert np.all(np.isfinite(profile))
