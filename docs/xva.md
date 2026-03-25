@@ -131,7 +131,15 @@ For XVA purposes, MPOR determines how far forward you shift the last-good CSB to
 E_coll(t) = max(V(t) − CSB(t − τ) − IM(t), 0)
 ```
 
-where τ is MPOR. This is what your streaming engine's MPOR ring buffer was computing.
+where τ is MPOR.
+
+**The naive proxy and why it's wrong**: A common approximation in simulation engines replaces `CSB(t − τ)` with `V(t − τ)` — i.e., it uses the MtM from `τ` steps ago as a proxy for the settled collateral. This is incorrect: the margin call at `t − τ` was gated by threshold and MTA, and the settled balance after a failed or partial call differs materially from a simple lookback of MtM. Under volatile markets, using `V(t − τ)` systematically underestimates `CSB(t − τ)` (because MTA suppresses small calls), which in turn overstates `E_coll(t)`. The result is a CVA that is too high on fully-margined books.
+
+**The ring buffer solution**: The correct implementation stores the *settled CSB* at each simulation step in a circular buffer of length `mpor_steps`. At time step `i`, the exposure under MPOR is:
+```
+ee_mpor[i] = E[max(V(t_i) − csb_buffer[(i − mpor_steps) mod mpor_steps], 0)]
+```
+where `csb_buffer[(i − mpor_steps)]` is the settled collateral balance exactly `mpor_steps` time steps earlier — including all MTA and threshold effects that were applied up to that point. This matches the Basel SA-CCR / FRTB definition precisely.
 
 ### The Gap Risk Problem
 
@@ -386,6 +394,24 @@ If counterparty A and counterparty B both have uncollateralised CSAs with the sa
 
 This is the "funding asymmetry" — banks are not funding-neutral intermediaries. They borrow short, lend long, and have an asymmetric cost structure.
 
+### Asymmetric FVA: Separate Borrow and Lend Spreads
+
+The symmetric formula `FVA = s_f × ∫ (EE − |ENE|) dt` conflates two economically distinct rates. In practice:
+
+- **Borrow spread** `s_borrow`: the bank's marginal cost of unsecured funding. Applies when the uncollateralised derivative generates positive MtM that the bank must fund. This rate is set by treasury and reflects the bank's credit spread and term premium.
+
+- **Lend spread** `s_lend`: the rate at which the bank effectively lends to the counterparty when the trade is in the counterparty's favour (negative MtM from the bank's perspective). This is not a physical cash lending rate — it is the benefit foregone by not requiring the counterparty to post. It is typically lower than `s_borrow` because the credit risk profile is different (you are a net receiver of the counterparty's credit risk, not a net provider of your own).
+
+The correct asymmetric formula:
+
+$$\text{FVA} = s_{\text{borrow}} \int_0^T \text{EE}(t) \, dt - s_{\text{lend}} \int_0^T |\text{ENE}(t)| \, dt$$
+
+Setting `s_lend = s_borrow` recovers the standard symmetric formula. A typical dealer might use `s_borrow = OIS + 80bps` but `s_lend = OIS + 40bps`, reflecting that the benefit of receiving the counterparty's credit risk is smaller than the cost of bearing your own.
+
+**The practical impact**: For a portfolio that is roughly at-the-money (EE ≈ |ENE|), a 40bps asymmetry halves the FVA benefit on the lend side. For portfolios that are consistently in-the-money (large EE, small ENE), the asymmetry barely matters. For deeply out-of-the-money portfolios (large ENE), applying the same spread to both legs overstates the FVA benefit.
+
+**Why this matters for pricing**: When you price a new trade, you use incremental FVA. If the new trade increases EE (costs more to fund), you charge `s_borrow × ΔEPE`. If it reduces EE (reduces funding needs) but increases ENE (creates a new lending leg), you credit `s_lend × Δ|ENE|`. The asymmetry determines the net charge on mixed-direction portfolio changes.
+
 ---
 
 ## 8. MVA — Margin Valuation Adjustment
@@ -475,6 +501,31 @@ PFE = multiplier × AddOn
 The AddOn is computed using SACCR supervisory factors by asset class — IR, FX, Credit, Equity, Commodity. These factors are deliberately conservative to create incentives for clearing and collateralisation.
 
 SA-CCR KVA is more tractable than IMM KVA because SA-CCR can be approximated analytically (no simulation needed). IMM KVA requires simulating the future internal model EAD, which is model-within-model.
+
+### Why the Flat EAD Approximation Understates KVA
+
+The formula `KVA = CoC × EAD(t_0) × T` holds today's EAD constant for the entire trade life. This is wrong for two reasons:
+
+**1. Residual maturity declines**: SA-CCR maturity factor `MF = sqrt(min(M, 1yr) / 1yr)` is bounded by one year. But the SA-CCR adjusted notional for an IR trade also depends on the supervisory duration `SD = (exp(−0.05·S) − exp(−0.05·E)) / 0.05`, which shrinks as the accrual period approaches zero. A 10-year swap two years before maturity has the same maturity factor cap but a dramatically smaller SD than the same swap at inception. The flat approximation ignores this.
+
+**2. MtM evolution changes RC**: Replacement Cost `RC = max(V − C, 0)` varies with market moves. In a Monte Carlo context, we can compute mean MtM at each future time step and use it to estimate the expected RC component of EAD at that step.
+
+### Path-Dependent KVA: The Correct Formula
+
+The proper KVA integrates the EAD time profile:
+
+$$\text{KVA} = \text{CoC} \int_0^T \text{EAD}(t) \, dt$$
+
+where `EAD(t)` is the SA-CCR EAD computed at time `t` with:
+- Each trade's residual maturity set to `max(0, maturity − t)`
+- IR supervisory duration recalculated with shifted start/end dates: `S(t) = max(0, S − t)`, `E(t) = max(0, E − t)`
+- MtM updated to the mean MTM over simulation paths at step t
+
+This ensures the EAD naturally declines to zero as trades approach maturity — no artificial floor, no over-counting of capital consumed by trades that are nearly expired.
+
+**The practical difference**: For a 5-year trade priced at year 0, the flat-EAD KVA includes capital for years 4–5 at the same EAD as year 0. But in year 4, the residual maturity is 1 year, the SD is a fraction of its original value, and the trade contributes little to the AddOn. The flat approximation can overstate KVA by 30–50% on longer-dated trades where the SD curve is steep.
+
+**The computation**: At each time step, rebuild the SA-CCR calculator with updated residual maturities and mean MtM, run the full EAD formula, collect the profile, and integrate. This is O(T × n_trades) in formula evaluations — tractable for realistic portfolio sizes.
 
 ### CVA Capital: The VaR on Top of CVA
 
@@ -711,6 +762,50 @@ MF_margined   = 1.5 × sqrt(MPOR / 1yr)
 ```
 
 The 1.5× factor for margined trades was controversial — it over-penalises frequently-margined netting sets.
+
+### Annex B: Supervisory Duration and Three-Bucket IR Aggregation
+
+The vanilla SA-CCR formula uses flat notional as the trade size. This is wrong for interest rate instruments: a 10-year swap with a 5% coupon has very different sensitivity than a 10-year ZCB, even at the same notional. **Annex B (BCBS 279)** corrects this with supervisory duration.
+
+**Supervisory duration (SD)**:
+
+```
+SD_j = (exp(−0.05 × S_j) − exp(−0.05 × E_j)) / 0.05
+```
+
+where `S_j` is the start of the accrual period (years) and `E_j` is the end (= maturity for a bullet swap). The formula integrates an exponential discount from S to E at a flat 5% rate — it is the present-value-weighted duration, independent of the actual coupon or market rate. For a 5-year bullet swap starting today: `SD = (1 − exp(−0.25)) / 0.05 ≈ 4.42 years`.
+
+The **adjusted notional** is then `d_j = N_j × SD_j`. For options, an additional delta scaling applies: `d_j = delta × N_j × SD_j`.
+
+**Three-bucket aggregation per currency**:
+
+IR trades are sorted into three maturity buckets:
+- Bucket 1: end date < 1 year
+- Bucket 2: end date 1–5 years
+- Bucket 3: end date > 5 years
+
+Within each bucket and currency, effective notionals `D_b` are summed:
+```
+D_b^ccy = Σ_j (delta_j × d_j × MF_j)   for j in bucket b, currency ccy
+```
+
+The bucket contributions aggregate with correlations prescribed by Basel:
+```
+AddOn_IR^ccy = sqrt(
+    (D₁)² + (D₂)² + (D₃)²
+    + ρ₁₂ × (D₁·D₂ + D₂·D₃)   [ρ₁₂ = ρ₂₃ = 0.70]
+    + ρ₁₃ × (D₁·D₃)             [ρ₁₃ = 0.30]
+)
+```
+
+Finally, currencies are **summed without netting** (cross-currency diversification is not recognised):
+```
+AddOn_IR = Σ_ccy AddOn_IR^ccy
+```
+
+**Why the three-bucket structure matters**: A portfolio of offsetting swaps across maturities does not fully net — a 2-year receiver and a 7-year payer in USD have opposite signs but live in different buckets (2 vs 3) and only partially offset through the ρ₁₃ = 0.30 correlation. A bank running a duration-neutral book (DV01 = 0) can still have significant SA-CCR AddOn. The Annex B correlations were calibrated to reflect the historical correlation between short, medium, and long rate moves.
+
+**The implication for KVA**: If you ignore Annex B and use flat notional, you misestimate both the absolute EAD level and its evolution over time. A 10-year swap has SD ≈ 7.87 at inception, falling to SD ≈ 4.42 in year 5. Using flat notional assumes no change — it's equivalent to pretending the swap gains 10 years of residual duration as time passes.
 
 ### FRTB-CVA (SA-CVA)
 

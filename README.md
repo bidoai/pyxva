@@ -73,7 +73,7 @@ uv add pyxva
 git clone https://github.com/bidoai/pyxva
 cd pyxva
 uv sync
-uv run pytest    # 467 tests
+uv run pytest    # ~495 tests
 ```
 
 See [DESIGN.md](DESIGN.md) for the reasoning behind key architectural decisions.
@@ -325,7 +325,7 @@ results = engine.run(
 
 `SimulationResult` exposes:
 - `.factor(name)` → `(n_paths, T)` — full path at all grid points
-- `.at(t)` → `(n_paths, n_factors)` — interpolated at arbitrary time
+- `.at(t)` → `(n_paths, n_factors)` — interpolated at arbitrary time; raises `ValueError` if `t` is outside the simulation grid (catches trade-past-maturity bugs that would otherwise silently extrapolate)
 - `.at_times(ts)` → `(n_paths, len(ts), n_factors)` — batch interpolation
 
 ---
@@ -423,7 +423,8 @@ agreements:
     counterparty: Goldman_Sachs
     cp_hazard_rate: 0.010
     own_hazard_rate: 0.005
-    funding_spread: 0.005        # optional: enables FVA + MVA computation
+    funding_spread: 0.006        # optional: borrow spread — enables FVA + MVA computation
+    lend_spread: 0.003           # optional: lend spread for asymmetric FVA (v1.2)
     cost_of_capital: 0.10        # optional: enables KVA (default 10%)
     csa:
       mta: 10000
@@ -474,9 +475,9 @@ result = engine.run(market_data=live_market_data)
 ```python
 result.agreement_results          # dict[agreement_id → AgreementResult]
 result.total_cva                  # sum of CVA across all agreements
-result.total_fva                  # sum of FVA across all agreements (v1.1)
-result.total_mva                  # sum of MVA across all agreements (v1.1)
-result.total_kva                  # sum of KVA across all agreements (v1.1)
+result.total_fva                  # sum of FVA across all agreements
+result.total_mva                  # sum of MVA across all agreements
+result.total_kva                  # sum of KVA across all agreements
 result.summary_df()               # pd.DataFrame — one row per agreement
 result.to_dict()                  # plain dict for serialisation
 result.to_parquet("./results/")   # summary.parquet, ee_profiles.parquet, pfe_profiles.parquet
@@ -491,7 +492,7 @@ RunResult.from_parquet("./results/")   # reload a persisted run (v1.1)
 | `ee_mpor_profile` | MPOR-shifted EE profile `(T,)` |
 | `netting_set_summaries` | Pre-collateral EE/PFE/PSE/EPE per netting set |
 | `cva` / `dva` / `bcva` | Credit XVA scalars |
-| `fva` / `mva` / `kva` | Funding/margin/capital XVA scalars (v1.1; 0.0 if not configured) |
+| `fva` / `mva` / `kva` | Funding/margin/capital XVA scalars (0.0 if not configured) |
 | `pse` / `epe` / `eepe` | Exposure scalars |
 
 ```python
@@ -609,12 +610,18 @@ trades = [("payer_5y", swap), ("barrier_call", barrier_opt)]
 csa    = CSATerms.regvm_standard("CP_A", mta=10_000)
 
 engine = StreamingExposureEngine(trades, csa, confidence=0.95)
-out    = engine.run(simulation_result)
+
+# Single-model: pass the SimulationResult directly
+out = engine.run(simulation_result)
+
+# Multi-model netting set (v1.2): pass a dict keyed by model_name
+# Each Trade object routes to the correct SimulationResult via trade.model_name
+out = engine.run({"rates_usd": hw_result, "equity_spx": gbm_result})
 
 out.ee_profile        # (T,) expected exposure
 out.pfe_profile       # (T,) peak future exposure
 out.ene_profile       # (T,) expected negative exposure
-out.ee_mpor_profile   # (T,) approximate EE under MPOR look-ahead (see DESIGN.md §6)
+out.ee_mpor_profile   # (T,) proper Basel MPOR exposure: E[max(V(t) − CSB(t−τ), 0)]
 out.peak_ee           # scalar
 out.peak_pfe          # scalar
 ```
@@ -722,7 +729,8 @@ stressed = result.stress_test(
 ## SA-CCR (Regulatory Capital)
 
 `SACCRCalculator` computes the Basel III Standardised Approach for Counterparty Credit
-Risk EAD formula: **EAD = 1.4 × (RC + PFE add-on)**.
+Risk EAD formula: **EAD = 1.4 × (RC + PFE add-on)**, with full Annex B supervisory
+duration and three-bucket IR aggregation (BCBS 279 / CRE52).
 
 ```python
 from pyxva.exposure.saccr import SACCRCalculator, SACCRTrade
@@ -735,6 +743,11 @@ calc.add_trade(SACCRTrade(
     maturity=5.0,
     current_mtm=50_000,
     delta=1.0,                # +1 receiver / -1 payer; BS delta for options
+    start_date=0.0,           # Annex B: accrual start in years (default 0)
+    end_date=5.0,             # Annex B: accrual end  in years (default = maturity)
+    currency="USD",           # Annex B: IR bucket aggregation is per-currency
+    is_margined=False,        # True → MF = 1.5 × sqrt(MPOR); False → sqrt(min(M,1yr))
+    mpor=10/252,              # MPOR in years (10 business days; only used if is_margined)
 ))
 calc.add_trade(SACCRTrade("opt_2y", "equity_single", 500_000, 2.0, -10_000, 0.6))
 
@@ -743,6 +756,15 @@ print(f"PFE addon: {calc.pfe_addon():,.0f}")
 print(f"EAD:       {calc.ead():,.0f}")
 ```
 
+**Annex B supervisory duration** (v1.2): IR adjusted notional = `notional × SD`, where
+`SD = (exp(−0.05·S) − exp(−0.05·E)) / 0.05`. This replaces the old flat-notional
+approximation and gives the correct time-value-weighted sensitivity for amortising swaps,
+forward-starting trades, and trades where S ≠ 0.
+
+**Three-bucket IR aggregation** (v1.2): Trades are assigned to maturity buckets
+(< 1yr / 1–5yr / > 5yr) per currency. Bucket effective notionals are aggregated with
+correlations ρ₁₂ = ρ₂₃ = 0.70, ρ₁₃ = 0.30 (BCBS 279 Annex B). No cross-currency netting.
+
 Build directly from pipeline `Trade` objects:
 
 ```python
@@ -750,8 +772,27 @@ calc = SACCRCalculator.from_trades(netting_set.trades, current_mtm={"swap_5y": 5
 ead = calc.ead()
 ```
 
-IR supervisory factors (Basel III CRE52): < 1Y: 0.20% / 1–5Y: 0.50% / 5–10Y: 1.00% / > 10Y: 1.50%.
-Equity single-name: 32% / Equity index: 20% / FX: 4%.
+**Collateral-aware EAD** (v1.2):
+
+```python
+ead_csa = calc.ead_with_collateral(collateral=1_000_000)
+rc_csa  = calc.replacement_cost_with_collateral(collateral=1_000_000)
+```
+
+**Path-dependent KVA EAD profile** (v1.2): computes a `(T,)` SA-CCR EAD time series
+where each trade's residual maturity declines as `max(0, maturity − t)` at each step.
+Feed the result directly into `kva_approx()` for trapezoidal integration.
+
+```python
+# mean MTM at each time step (e.g. from ISDAExposureCalculator.run())
+mean_mtm = {"swap_5y": ee_profile}   # (T,) mean MTM over paths
+
+ead_ts = calc.ead_profile(time_grid, mean_mtm_by_trade=mean_mtm)
+# ead_ts is (T,) — starts high, declines to near zero as trades mature
+```
+
+Non-IR supervisory factors (CRE52.72): Equity single-name: 32% / Equity index: 20% / FX: 4%.
+IR supervisory factor (Annex B): SF_IR = 0.50% applied to the aggregated bucket notionals.
 
 ---
 
@@ -808,7 +849,7 @@ out  = isda.run(results, time_grid, confidence=0.95,
 
 ---
 
-## xVA Suite (v1.1)
+## xVA Suite
 
 `BilateralExposureCalculator` computes the full X in xVA: CVA, DVA, FVA, MVA, and KVA.
 All methods accept a scalar hazard/funding rate or a `HazardCurve` for term-structure inputs.
@@ -849,8 +890,15 @@ calc = BilateralExposureCalculator()
 cva = calc.cva_approx(mtm, time_grid, hazard_rate=cp_hc, lgd=0.6)
 dva = calc.dva_approx(mtm, time_grid, own_hazard_rate=own_hc, own_lgd=0.6)
 
-# FVA — cost of funding uncollateralised exposure
-fva = calc.fva_approx(mtm, time_grid, funding=0.005)
+# FVA — asymmetric funding cost (v1.2: separate borrow and lend spreads)
+# borrow_spread = cost of funding positive exposure (you owe VM to hedge)
+# lend_spread   = benefit from negative exposure (counterparty owes you nothing)
+# Setting lend_spread < borrow_spread reflects the standard dealer asymmetry
+fva = calc.fva_approx(mtm, time_grid, borrow_spread=0.006, lend_spread=0.003)
+
+# Backwards-compatible single-spread form (lend_spread defaults to borrow_spread)
+fva = calc.fva_approx(mtm, time_grid, borrow_spread=0.005)
+# Legacy keyword still accepted: fva_approx(mtm, time_grid, funding=0.005)
 
 # MVA — cost of funding initial margin over the trade life
 from pyxva import REGIMEngine, CSATerms, IMModel
@@ -858,8 +906,14 @@ im_engine = REGIMEngine(CSATerms(im_model=IMModel.SCHEDULE))
 im_profile = im_engine.im_time_profile(trades, time_grid)   # (T,) declining profile
 mva = calc.mva_approx(im_profile, time_grid, funding=0.005)
 
-# KVA — cost of holding regulatory capital (flat t=0 EAD approximation)
-kva = calc.kva_approx(ead_t0=500_000, time_grid=time_grid, cost_of_capital=0.10)
+# KVA — scalar flat-EAD approximation (original form, still supported)
+kva = calc.kva_approx(ead=500_000, time_grid=time_grid, cost_of_capital=0.10)
+
+# KVA — path-dependent EAD profile (v1.2): trapezoidal integral CoC × ∫ EAD(t) dt
+# ead_ts declines as trades approach maturity — more accurate than flat t=0 EAD
+saccr_calc = SACCRCalculator.from_trades(netting_set.trades, current_mtm=mean_mtm_t0)
+ead_ts = saccr_calc.ead_profile(time_grid, mean_mtm_by_trade=mean_mtm_by_trade)
+kva = calc.kva_approx(ead=ead_ts, time_grid=time_grid, cost_of_capital=0.10)
 ```
 
 ### Per-bucket attribution waterfall
@@ -868,7 +922,8 @@ kva = calc.kva_approx(ead_t0=500_000, time_grid=time_grid, cost_of_capital=0.10)
 attribution = calc.xva_attribution(
     mtm, time_grid,
     hazard=cp_hc,
-    funding=0.005,
+    borrow_spread=0.005,
+    lend_spread=0.003,   # optional; defaults to borrow_spread if omitted
     im_profile=im_profile,
     lgd=0.6,
     own_hazard=own_hc,
