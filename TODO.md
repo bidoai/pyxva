@@ -40,24 +40,41 @@ Items are grouped by area; priority labels: `[P1]` urgent / `[P2]` important / `
   store trades as `Trade` objects (not `(str, Pricer)` tuples) so that `trade.model_name`
   can be used to retrieve the correct `SimulationResult` directly.
 
-- [ ] **[P2] `StreamingExposureEngine` MPOR calculation is a proxy.**
-  The current `ee_mpor_profile` is `E[max(V(t) - V(t - mpor), 0)]` as a rough stand-in.
-  A proper implementation replays the CSB from the last successful margin call at
-  `t - mpor`, matching the Basel SA-CCR / FRTB definition.
+- [x] **[P2] `StreamingExposureEngine` MPOR calculation is a proxy.**
+  Fixed in v1.2: replaced proxy with proper CSB ring buffer.
+  `CE_mpor(t) = max(V(t) - CSB(t - mpor), 0)` where `CSB(t - mpor)` is
+  the settled collateral from `mpor_steps` time steps ago.
 
 - [x] **[P2] `REGVMStepper` rounding convention.**
   The current implementation rounds to the nearest multiple.  ISDA 2016 VM CSA specifies
   that delivery amounts round *up* and return amounts round *down*.  Fix the rounding
   branches accordingly.
 
-- [ ] **[P3] `StreamingExposureEngine`: support multi-model netting sets.**
-  Currently each trade is priced via a single `SimulationResult` passed to `run()`.
-  Support a `results: dict` argument so trades backed by different models (rates +
-  equity in the same netting set) can be priced correctly.
+- [x] **[P3] `StreamingExposureEngine`: support multi-model netting sets.**
+  Implemented in v1.2: `run()` now accepts `SimulationResult | dict[str, SimulationResult]`.
+  `Trade` objects with `model_name` route to the correct result; legacy `(id, pricer)` tuples
+  remain supported for backwards compatibility.
 
 ---
 
 ## XVA
+
+- [x] **[P1] Asymmetric FVA (borrow vs lend spread).**
+  Implemented in v1.2: `fva_approx(borrow_spread, lend_spread=None)`.
+  Backward-compatible via legacy `funding=` keyword. Propagated through
+  `bilateral_summary()`, `ISDAExposureCalculator.run()`, `AgreementConfig`, and
+  `xva_attribution()`. `lend_spread` field added to `AgreementConfig` and YAML parsing.
+
+- [x] **[P1] Path-dependent KVA EAD profile.**
+  Implemented in v1.2: `SACCRCalculator.ead_profile(time_grid, mean_mtm_by_trade)`
+  computes EAD at each time step with declining residual maturity.
+  `kva_approx(ead, ...)` now accepts `float | np.ndarray`; array form uses
+  trapezoidal integration `CoC × ∫ EAD(t) dt`.
+
+- [ ] **[P2] SIMM-based `im_time_profile`.**
+  Current `REGIMEngine.im_time_profile()` uses Schedule IM. For Phase 5/6 firms
+  under UMR, SIMM sensitivities produce a different declining profile. Requires
+  sensitivity input interface design before implementation.
 
 - [x] **[P2] FVA (Funding Valuation Adjustment).**
   Implemented in v1.1. `BilateralExposureCalculator.fva_approx()` accepts
@@ -111,14 +128,12 @@ Items are grouped by area; priority labels: `[P1]` urgent / `[P2]` important / `
 
 ## Core
 
-- [ ] **[P2] `SimulationResult.at(t)` boundary handling.**
-  When `t > max(time_grid)`, `at()` currently clamps to the last node silently.
-  It should raise or return zeros with a warning, since extrapolating beyond maturity
-  is almost always a logic error.
+- [x] **[P2] `SimulationResult.at(t)` boundary handling.**
+  Fixed in v1.2: `at()` now raises `ValueError` with a descriptive message when
+  `t < time_grid[0]` or `t > time_grid[-1]` (within 1e-9 tolerance).
 
-- [ ] **[P3] `SparseTimeGrid.dt()` method.**
-  Return a `(T-1,)` array of step sizes; useful for trapezoidal integration in EPE
-  calculations inside pricers without re-differencing `time_grid`.
+- [x] **[P3] `SparseTimeGrid.dt()` method.**
+  Already implemented as a static method returning `np.diff(grid)`. No further action needed.
 
 ---
 

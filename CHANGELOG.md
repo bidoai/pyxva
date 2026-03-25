@@ -5,6 +5,56 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.2.0] — 2026-03-24
+
+### Added
+
+- **SA-CCR Annex B upgrade** (`exposure/saccr.py`): full BCBS 279 Annex B
+  implementation replacing the previous flat-notional add-on.  New features:
+  - Supervisory duration `SD = (exp(-0.05·S) − exp(-0.05·E)) / 0.05` on each IR trade
+  - Three-bucket IR aggregation per currency (ρ₁₂=ρ₂₃=0.70, ρ₁₃=0.30), cross-currency sum
+  - `SACCRTrade` extended with `start_date`, `end_date`, `currency`, `mpor`, `is_margined`
+  - `replacement_cost_with_collateral(collateral)` and `ead_with_collateral(collateral)` for CSA-aware EAD
+
+- **`SACCRCalculator.ead_profile(time_grid, mean_mtm_by_trade)`**: computes a
+  `(T,)` SA-CCR EAD time series with declining residual maturity at each step.
+  Enables path-dependent KVA integration instead of the flat-EAD approximation.
+
+- **Path-dependent KVA** (`BilateralExposureCalculator.kva_approx`): `ead` parameter
+  now accepts `float | np.ndarray`.  Scalar → flat-EAD formula (backwards compatible);
+  array → trapezoidal integral `CoC × ∫ EAD(t) dt`.
+
+- **Asymmetric FVA** (`BilateralExposureCalculator.fva_approx`): new `borrow_spread`
+  and `lend_spread` parameters replace the single `funding` spread.  `lend_spread=None`
+  defaults to `borrow_spread` (symmetric, fully backwards compatible via legacy
+  `funding=` keyword).  Propagated through `bilateral_summary()`,
+  `ISDAExposureCalculator.run()`, `AgreementConfig`, and `xva_attribution()`.
+  `AgreementConfig.lend_spread` added to YAML parsing.
+
+- **Proper MPOR in `StreamingExposureEngine`**: replaced the
+  `E[max(V(t) − V(t−mpor), 0)]` proxy with a CSB ring buffer.  At each step the
+  settled collateral is stored; `ee_mpor_profile[i] = E[max(V(t_i) − CSB(t_{i−mpor}), 0)]`
+  matches the Basel SA-CCR / FRTB definition.
+
+- **Multi-model netting sets in `StreamingExposureEngine`**: `run()` now accepts
+  `SimulationResult | dict[str, SimulationResult]`.  Pass `Trade` objects (with
+  `model_name`) for per-trade model routing; `(id, pricer)` tuples remain fully
+  supported.  All results in the dict must share the same time grid (validated).
+
+### Fixed
+
+- **`SimulationResult.at(t)` silent extrapolation**: `at()` now raises `ValueError`
+  with a descriptive message when `t` is outside `[time_grid[0], time_grid[-1]]`
+  (within 1e-9 tolerance).  This catches trade-past-maturity bugs that previously
+  produced silently wrong numbers.
+
+### Changed
+
+- `fva_approx` parameter renamed from `funding` to `borrow_spread`; `funding` remains
+  accepted as a keyword-only backwards-compatibility alias.
+
+---
+
 ## [1.1.0] — 2026-03-18
 
 ### Added
